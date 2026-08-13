@@ -3,35 +3,48 @@ const cookieParser = require('cookie-parser');
 const { loadEnv } = require('./env');
 const threads = require('./threads');
 const views = require('./views');
+const { pool, migrate } = require('./db');
+const publisher = require('./publisher');
 
 const env = loadEnv();
 const app = express();
 app.use(cookieParser(env.COOKIE_SECRET));
 app.use(express.urlencoded({ extended: false }));
 
-function getSession(req) {
-  const raw = req.signedCookies.session;
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
+function requireAdmin(req, res, next) {
+  if (req.signedCookies.admin === '1') return next();
+  res.redirect('/login');
+}
+
+app.get('/', (req, res) => res.send(views.landing()));
+
+app.get('/login', (req, res) => res.send(views.adminLogin()));
+
+app.post('/login', (req, res) => {
+  if (req.body.password === env.ADMIN_PASSWORD) {
+    res.cookie('admin', '1', {
+      httpOnly: true,
+      signed: true,
+      secure: req.protocol === 'https',
+      sameSite: 'lax',
+      maxAge: 30 * 24 * 3600 * 1000,
+    });
+    return res.redirect('/channels');
   }
-}
-
-function requireSession(req, res, next) {
-  const session = getSession(req);
-  if (!session) return res.redirect('/');
-  req.session = session;
-  next();
-}
-
-app.get('/', (req, res) => {
-  if (getSession(req)) return res.redirect('/dashboard');
-  res.send(views.landing());
+  res.status(401).send(views.adminLogin('비밀번호가 틀렸습니다.'));
 });
 
-app.get('/auth/login', (req, res) => {
+app.get('/logout', (req, res) => {
+  res.clearCookie('admin');
+  res.redirect('/');
+});
+
+app.get('/channels', requireAdmin, async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM channels ORDER BY created_at DESC');
+  res.send(views.channelsList(rows));
+});
+
+app.get('/channels/connect', requireAdmin, (req, res) => {
   res.redirect(threads.buildAuthorizeUrl(env));
 });
 
@@ -50,68 +63,69 @@ app.get('/auth/callback', async (req, res) => {
       loginPromise.catch(() => codeExchangeCache.delete(code));
     }
     const { accessToken, threadsUserId, username, expiresIn } = await loginPromise;
-    res.cookie('session', JSON.stringify({ accessToken, threadsUserId, username }), {
-      httpOnly: true,
-      signed: true,
-      secure: req.protocol === 'https',
-      sameSite: 'lax',
-      maxAge: expiresIn * 1000,
-    });
-    res.redirect('/dashboard');
+    await pool.query(
+      `INSERT INTO channels (threads_user_id, username, access_token, token_expires_at)
+       VALUES ($1, $2, $3, now() + ($4 || ' seconds')::interval)
+       ON CONFLICT (threads_user_id) DO UPDATE
+         SET username = $2, access_token = $3, token_expires_at = now() + ($4 || ' seconds')::interval`,
+      [threadsUserId, username, accessToken, expiresIn]
+    );
+    res.redirect('/channels');
   } catch (e) {
     res.status(500).send(views.errorPage(e.message));
   }
 });
 
-app.get('/auth/logout', (req, res) => {
-  res.clearCookie('session');
-  res.redirect('/');
+app.get('/compose', requireAdmin, async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM channels ORDER BY created_at DESC');
+  res.send(views.composeForm(rows));
 });
 
-app.get('/dashboard', requireSession, (req, res) => {
-  res.send(views.dashboard(req.session.username));
-});
-
-app.post('/dashboard/publish', requireSession, async (req, res) => {
-  const { text, imageUrl, videoUrl, replyText, delayMinutes } = req.body;
-  const { accessToken, threadsUserId, username } = req.session;
+app.post('/compose', requireAdmin, async (req, res) => {
+  const { channelId, text, imageUrl, videoUrl, replyText, delayMinutes } = req.body;
   const delay = Math.max(0, parseInt(delayMinutes, 10) || 0);
-  const params = {
-    text,
-    imageUrl: imageUrl || null,
-    videoUrl: videoUrl || null,
-    replyText: replyText || null,
-  };
 
-  try {
-    if (delay === 0) {
-      const { postId, replyId } = await threads.publishPost(threadsUserId, accessToken, params);
-      return res.send(views.published(username, postId, replyId));
+  const { rows: channelRows } = await pool.query('SELECT * FROM channels WHERE id = $1', [channelId]);
+  const channel = channelRows[0];
+  if (!channel) return res.status(400).send(views.errorPage('채널을 찾을 수 없습니다.'));
+
+  const scheduledAt = new Date(Date.now() + delay * 60000);
+  const { rows: inserted } = await pool.query(
+    `INSERT INTO scheduled_posts (channel_id, text, image_url, video_url, reply_text, scheduled_at)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+    [channel.id, text, imageUrl || null, videoUrl || null, replyText || null, scheduledAt]
+  );
+  const post = inserted[0];
+
+  const { rows: channels } = await pool.query('SELECT * FROM channels ORDER BY created_at DESC');
+
+  if (delay === 0) {
+    try {
+      const { postId } = await publisher.publishOne(post, channel);
+      return res.send(
+        views.composeForm(channels, `게시 완료: https://www.threads.net/@${channel.username}/post/${postId}`)
+      );
+    } catch (e) {
+      return res.status(500).send(views.errorPage(e.message));
     }
-
-    // 예약: 먼저 컨테이너를 만들어 미디어 처리를 끝내두고, 실제 발행 호출만 지연시킨다.
-    const creationId = await threads.buildMainCreationId(threadsUserId, accessToken, params);
-    res.send(views.scheduled(delay));
-    setTimeout(async () => {
-      try {
-        const postId = await threads.publishContainer(threadsUserId, accessToken, creationId);
-        if (params.replyText) {
-          await threads.publishReply(threadsUserId, accessToken, postId, params.replyText);
-        }
-        console.log(`[예약 발행 완료] @${username} -> ${postId}`);
-      } catch (e) {
-        console.error(`[예약 발행 실패] @${username}:`, e.message);
-      }
-    }, delay * 60000);
-  } catch (e) {
-    res.status(500).send(views.errorPage(e.message));
   }
+
+  res.send(views.composeForm(channels, `${delay}분 후(${scheduledAt.toLocaleString('ko-KR')}) 예약되었습니다.`));
+});
+
+app.get('/posts', requireAdmin, async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT sp.*, c.username FROM scheduled_posts sp
+     JOIN channels c ON c.id = sp.channel_id
+     ORDER BY sp.scheduled_at DESC LIMIT 100`
+  );
+  res.send(views.postsHistory(rows));
 });
 
 app.get('/privacy', (req, res) => res.send(views.privacy()));
 app.get('/terms', (req, res) => res.send(views.terms()));
 
-// Meta가 사용자의 앱 연결 해제/삭제 요청 시 호출하는 콜백. 세션은 쿠키 기반이라 별도 삭제할 서버측 저장소가 없음 — 그냥 확인 응답만 반환.
+// Meta가 사용자의 앱 연결 해제/삭제 요청 시 호출하는 콜백.
 app.post('/auth/deauthorize', (req, res) => res.sendStatus(200));
 
 app.post('/auth/delete', (req, res) => {
@@ -127,4 +141,9 @@ app.get('/auth/delete/status', (req, res) => {
 });
 
 const port = env.PORT || 5000;
-app.listen(port, () => console.log(`threads-scheduler demo listening on :${port}`));
+migrate()
+  .then(() => app.listen(port, () => console.log(`threads-scheduler listening on :${port}`)))
+  .catch((e) => {
+    console.error('DB 마이그레이션 실패:', e.message);
+    process.exit(1);
+  });

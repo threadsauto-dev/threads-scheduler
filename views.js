@@ -5,11 +5,20 @@ const layout = (title, body) => `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>${title}</title>
 <style>
-  body { font-family: -apple-system, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; color: #1a1a1a; line-height: 1.6; }
+  body { font-family: -apple-system, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 20px; color: #1a1a1a; line-height: 1.6; }
   a.button { display: inline-block; background: #000; color: #fff; padding: 12px 24px; border-radius: 999px; text-decoration: none; font-weight: 600; }
-  textarea, input { width: 100%; box-sizing: border-box; padding: 10px; margin: 6px 0 16px; border: 1px solid #ddd; border-radius: 8px; font-size: 15px; }
+  textarea, input, select { width: 100%; box-sizing: border-box; padding: 10px; margin: 6px 0 16px; border: 1px solid #ddd; border-radius: 8px; font-size: 15px; }
   label { font-weight: 600; font-size: 14px; color: #555; }
   button { background: #000; color: #fff; padding: 12px 24px; border: none; border-radius: 999px; font-weight: 600; font-size: 15px; cursor: pointer; }
+  nav { margin-bottom: 24px; font-size: 14px; }
+  nav a { margin-right: 16px; color: #555; text-decoration: none; }
+  nav a:hover { text-decoration: underline; }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+  th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; font-size: 14px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
+  .badge-pending { background: #fff3cd; }
+  .badge-published { background: #d4edda; }
+  .badge-failed { background: #f8d7da; }
   footer { margin-top: 40px; font-size: 13px; color: #888; }
   footer a { color: #888; }
 </style>
@@ -20,17 +29,53 @@ ${body}
 </body>
 </html>`;
 
+const nav = () => `<nav>
+  <a href="/channels">채널</a>
+  <a href="/compose">글쓰기</a>
+  <a href="/posts">발행 내역</a>
+  <a href="/logout">로그아웃</a>
+</nav>`;
+
 const landing = () => layout('threads-scheduler', `
   <h1>threads-scheduler</h1>
-  <p>Threads 계정을 연결하면, 지금 또는 원하는 시각에 대신 글을 게시해드립니다.</p>
-  <a class="button" href="/auth/login">Threads로 로그인</a>
+  <p>여러 Threads 채널을 연결하고, 지금 또는 원하는 시각에 대신 글을 게시합니다.</p>
+  <a class="button" href="/login">관리자 로그인</a>
 `);
 
-const dashboard = (username, result) => layout('대시보드', `
-  <h1>@${username}</h1>
-  <p><a href="/auth/logout">로그아웃</a></p>
-  ${result ? `<p style="background:#f0f9f0;padding:12px;border-radius:8px;">${result}</p>` : ''}
-  <form method="post" action="/dashboard/publish">
+const adminLogin = (error) => layout('관리자 로그인', `
+  <h1>관리자 로그인</h1>
+  ${error ? `<p style="color:#c00;">${error}</p>` : ''}
+  <form method="post" action="/login">
+    <label>비밀번호</label>
+    <input type="password" name="password" required />
+    <button type="submit">로그인</button>
+  </form>
+`);
+
+const channelsList = (channels) => layout('채널', `
+  ${nav()}
+  <h1>연결된 채널</h1>
+  <table>
+    <tr><th>계정</th><th>연결일</th></tr>
+    ${channels
+      .map((c) => `<tr><td>@${c.username}</td><td>${new Date(c.created_at).toLocaleString('ko-KR')}</td></tr>`)
+      .join('') || '<tr><td colspan="2">연결된 채널이 없습니다.</td></tr>'}
+  </table>
+  <a class="button" href="/channels/connect">+ 새 채널 연결</a>
+`);
+
+const composeForm = (channels, message) => layout('글쓰기', `
+  ${nav()}
+  <h1>글쓰기</h1>
+  ${message ? `<p style="background:#f0f9f0;padding:12px;border-radius:8px;">${message}</p>` : ''}
+  ${
+    channels.length === 0
+      ? `<p>먼저 <a href="/channels/connect">채널을 연결</a>해주세요.</p>`
+      : `<form method="post" action="/compose">
+    <label>채널</label>
+    <select name="channelId" required>
+      ${channels.map((c) => `<option value="${c.id}">@${c.username}</option>`).join('')}
+    </select>
     <label>본문</label>
     <textarea name="text" rows="5" required placeholder="게시할 내용을 입력하세요"></textarea>
     <label>이미지 URL (선택)</label>
@@ -40,22 +85,30 @@ const dashboard = (username, result) => layout('대시보드', `
     <label>댓글 (선택)</label>
     <input type="text" name="replyText" placeholder="게시 후 자동으로 달릴 댓글" />
     <label>몇 분 후 게시할까요? (0이면 즉시)</label>
-    <input type="number" name="delayMinutes" value="0" min="0" max="60" />
-    <button type="submit">게시</button>
-  </form>
+    <input type="number" name="delayMinutes" value="0" min="0" />
+    <button type="submit">게시 / 예약</button>
+  </form>`
+  }
 `);
 
-const scheduled = (minutes) => layout('예약 완료', `
-  <h1>예약되었습니다</h1>
-  <p>${minutes}분 후 자동으로 게시됩니다.</p>
-  <a class="button" href="/dashboard">돌아가기</a>
-`);
-
-const published = (username, postId, replyId) => layout('게시 완료', `
-  <h1>게시 완료</h1>
-  <p><a href="https://www.threads.net/@${username}/post/${postId}" target="_blank">게시물 보기</a></p>
-  ${replyId ? '<p>댓글도 함께 게시되었습니다.</p>' : ''}
-  <a class="button" href="/dashboard">돌아가기</a>
+const postsHistory = (posts) => layout('발행 내역', `
+  ${nav()}
+  <h1>발행 내역</h1>
+  <table>
+    <tr><th>채널</th><th>본문</th><th>예정 시각</th><th>상태</th></tr>
+    ${
+      posts
+        .map(
+          (p) => `<tr>
+        <td>@${p.username}</td>
+        <td>${(p.text || '').slice(0, 30)}</td>
+        <td>${new Date(p.scheduled_at).toLocaleString('ko-KR')}</td>
+        <td><span class="badge badge-${p.status}">${p.status}</span></td>
+      </tr>`
+        )
+        .join('') || '<tr><td colspan="4">기록이 없습니다.</td></tr>'
+    }
+  </table>
 `);
 
 const errorPage = (message) => layout('오류', `
@@ -83,11 +136,11 @@ const terms = () => layout('이용약관', `
   <h1>이용약관</h1>
   <p>최종 수정일: 2026-08-13</p>
   <h3>서비스 설명</h3>
-  <p>threads-scheduler는 회원님의 Threads 계정에, 회원님이 작성하고 지정한 시점에 게시물(텍스트/이미지/영상)을 대신 게시해주는 도구입니다.</p>
-  <h3>회원님의 책임</h3>
-  <p>게시하는 콘텐츠에 대한 모든 책임은 회원님 본인에게 있으며, Threads 및 Meta의 커뮤니티 가이드라인을 준수해야 합니다.</p>
+  <p>threads-scheduler는 연결된 Threads 계정에, 지정한 시점에 게시물(텍스트/이미지/영상)을 대신 게시해주는 도구입니다.</p>
+  <h3>책임</h3>
+  <p>게시하는 콘텐츠에 대한 모든 책임은 이용자 본인에게 있으며, Threads 및 Meta의 커뮤니티 가이드라인을 준수해야 합니다.</p>
   <h3>연결 해제</h3>
-  <p>언제든 대시보드에서 로그아웃하거나 Threads 계정 설정에서 이 앱과의 연결을 해제할 수 있습니다.</p>
+  <p>언제든 Threads 계정 설정에서 이 앱과의 연결을 해제할 수 있습니다.</p>
   <h3>문의</h3>
   <p>${CONTACT_EMAIL}</p>
 `);
@@ -97,4 +150,14 @@ const deleteStatus = (id) => layout('삭제 요청 처리 완료', `
   <p>요청 번호: ${id || '-'}</p>
 `);
 
-module.exports = { landing, dashboard, scheduled, published, errorPage, privacy, terms, deleteStatus };
+module.exports = {
+  landing,
+  adminLogin,
+  channelsList,
+  composeForm,
+  postsHistory,
+  errorPage,
+  privacy,
+  terms,
+  deleteStatus,
+};

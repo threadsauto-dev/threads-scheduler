@@ -15,7 +15,7 @@ function loadEnv() {
       if (!env[key]) env[key] = trimmed.slice(eq + 1).trim();
     }
   }
-  for (const key of ['APP_ID', 'APP_SECRET', 'REDIRECT_URI', 'COOKIE_SECRET']) {
+  for (const key of ['APP_ID', 'APP_SECRET', 'REDIRECT_URI', 'COOKIE_SECRET', 'ADMIN_PASSWORD', 'DATABASE_URL']) {
     if (!env[key]) throw new Error(`.env 에 ${key}가 없습니다.`);
   }
   return env;
