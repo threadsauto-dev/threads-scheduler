@@ -172,7 +172,7 @@ app.post(
     if (editId) {
       // 발행 시각이 지나 크론이 이미 집어간(processing/published) 예약은 수정 못 하게 status='pending'을 같이 확인.
       const { rows: updated } = await pool.query(
-        `UPDATE scheduled_posts SET channel_id = $1, text = $2, media = $3, reply_text = $4, scheduled_at = $5
+        `UPDATE scheduled_posts SET channel_id = $1, text = $2, media = $3, reply_text = $4, scheduled_at = $5, retry_count = 0
          WHERE id = $6 AND status = 'pending' RETURNING *`,
         [channel.id, text, JSON.stringify(media), replyText || null, scheduledAt, editId]
       );
