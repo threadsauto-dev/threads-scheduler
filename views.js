@@ -144,7 +144,7 @@ const composeForm = (channels, message, upcomingPending = [], selectedChannelId,
         .join('')}
     </select>
     <label>본문</label>
-    <textarea name="text" rows="5" required placeholder="게시할 내용을 입력하세요">${editingPost ? escapeHtml(editingPost.text || '') : ''}</textarea>
+    <textarea name="text" id="composeText" rows="5" required placeholder="게시할 내용을 입력하세요">${editingPost ? escapeHtml(editingPost.text || '') : ''}</textarea>
 
     ${
       editingPost && (editingPost.media || []).length > 0
@@ -350,7 +350,7 @@ const composeForm = (channels, message, upcomingPending = [], selectedChannelId,
     </script>
 
     <label>댓글 (선택)</label>
-    <textarea name="replyText" rows="6" placeholder="게시 후 자동으로 달릴 댓글">${editingPost ? escapeHtml(editingPost.reply_text || '') : ''}</textarea>
+    <textarea name="replyText" id="composeReplyText" rows="6" placeholder="게시 후 자동으로 달릴 댓글">${editingPost ? escapeHtml(editingPost.reply_text || '') : ''}</textarea>
 
     <label>발행 날짜</label>
     <input type="date" name="scheduledDate" id="scheduledDate" required ${editingPost ? `value="${kstDateInputParts(editingPost.scheduled_at).date}"` : ''} />
