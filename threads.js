@@ -52,6 +52,17 @@ async function fetchProfile(accessToken) {
   return call('/me', { fields: 'id,username', access_token: accessToken });
 }
 
+// 만료 전에 장기 토큰을 60일 더 연장한다. 발급된 지 24시간 이상 지난, 아직 만료되지 않은 토큰만 갱신 가능.
+async function refreshToken(accessToken) {
+  const url = new URL('https://graph.threads.net/refresh_access_token');
+  url.searchParams.set('grant_type', 'th_refresh_token');
+  url.searchParams.set('access_token', accessToken);
+  const res = await fetch(url);
+  const json = await res.json();
+  if (!res.ok) throw new Error(`[토큰 갱신 실패] ${JSON.stringify(json)}`);
+  return { accessToken: json.access_token, expiresIn: json.expires_in };
+}
+
 async function loginWithCode(env, code) {
   const short = await exchangeCode(env, code);
   const long = await exchangeLongLived(env, short.access_token);
@@ -133,6 +144,7 @@ async function publishPost(userId, accessToken, { text, imageUrl, videoUrl, repl
 module.exports = {
   buildAuthorizeUrl,
   loginWithCode,
+  refreshToken,
   buildMainCreationId,
   publishContainer,
   publishReply,
