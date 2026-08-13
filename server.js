@@ -142,7 +142,7 @@ app.post(
       }
     }
 
-    res.send(views.composeForm(channels, `${scheduledAt.toLocaleString('ko-KR')}에 예약되었습니다.`));
+    res.send(views.composeForm(channels, `${views.formatKst(scheduledAt)}에 예약되었습니다.`));
   }
 );
 

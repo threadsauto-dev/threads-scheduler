@@ -1,3 +1,6 @@
+// toLocaleString('ko-KR')만으로는 서버 실행 환경의 시간대(Render는 UTC)를 그대로 쓰고 한국어 표기만 입혀서 실제 KST와 어긋난다 — timeZone을 명시해야 한다.
+const formatKst = (date) => new Date(date).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
+
 const layout = (title, body) => `<!doctype html>
 <html lang="ko">
 <head>
@@ -58,7 +61,7 @@ const channelsList = (channels) => layout('채널', `
   <table>
     <tr><th>계정</th><th>연결일</th></tr>
     ${channels
-      .map((c) => `<tr><td>@${c.username}</td><td>${new Date(c.created_at).toLocaleString('ko-KR')}</td></tr>`)
+      .map((c) => `<tr><td>@${c.username}</td><td>${formatKst(c.created_at)}</td></tr>`)
       .join('') || '<tr><td colspan="2">연결된 채널이 없습니다.</td></tr>'}
   </table>
   <a class="button" href="/channels/connect">+ 새 채널 연결</a>
@@ -117,7 +120,7 @@ const postsHistory = (posts) => layout('발행 내역', `
           (p) => `<tr>
         <td>@${p.username}</td>
         <td>${(p.text || '').slice(0, 30)}</td>
-        <td>${new Date(p.scheduled_at).toLocaleString('ko-KR')}</td>
+        <td>${formatKst(p.scheduled_at)}</td>
         <td><span class="badge badge-${p.status}">${p.status}</span></td>
       </tr>`
         )
@@ -166,6 +169,7 @@ const deleteStatus = (id) => layout('삭제 요청 처리 완료', `
 `);
 
 module.exports = {
+  formatKst,
   landing,
   adminLogin,
   channelsList,
