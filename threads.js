@@ -1,0 +1,140 @@
+const API = 'https://graph.threads.net/v1.0';
+
+async function call(path, params, method = 'GET') {
+  const url = new URL(`${API}${path}`);
+  if (method === 'GET') for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  const res = await fetch(url, {
+    method,
+    ...(method === 'POST' ? { body: new URLSearchParams(params) } : {}),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(`[${path}] ${JSON.stringify(json)}`);
+  return json;
+}
+
+// --- OAuth ---
+
+function buildAuthorizeUrl(env) {
+  const url = new URL('https://threads.net/oauth/authorize');
+  url.searchParams.set('client_id', env.APP_ID);
+  url.searchParams.set('redirect_uri', env.REDIRECT_URI);
+  url.searchParams.set('scope', 'threads_basic,threads_content_publish');
+  url.searchParams.set('response_type', 'code');
+  return url.toString();
+}
+
+async function exchangeCode(env, code) {
+  const body = new URLSearchParams({
+    client_id: env.APP_ID,
+    client_secret: env.APP_SECRET,
+    grant_type: 'authorization_code',
+    redirect_uri: env.REDIRECT_URI,
+    code,
+  });
+  const res = await fetch('https://graph.threads.net/oauth/access_token', { method: 'POST', body });
+  const json = await res.json();
+  if (!res.ok) throw new Error(`[단기 토큰 교환 실패] ${JSON.stringify(json)}`);
+  return json; // { access_token, user_id }
+}
+
+async function exchangeLongLived(env, shortToken) {
+  const url = new URL('https://graph.threads.net/access_token');
+  url.searchParams.set('grant_type', 'th_exchange_token');
+  url.searchParams.set('client_secret', env.APP_SECRET);
+  url.searchParams.set('access_token', shortToken);
+  const res = await fetch(url);
+  const json = await res.json();
+  if (!res.ok) throw new Error(`[장기 토큰 교환 실패] ${JSON.stringify(json)}`);
+  return json; // { access_token, token_type, expires_in }
+}
+
+async function fetchProfile(accessToken) {
+  return call('/me', { fields: 'id,username', access_token: accessToken });
+}
+
+async function loginWithCode(env, code) {
+  const short = await exchangeCode(env, code);
+  const long = await exchangeLongLived(env, short.access_token);
+  const profile = await fetchProfile(long.access_token);
+  return {
+    accessToken: long.access_token,
+    expiresIn: long.expires_in,
+    threadsUserId: profile.id,
+    username: profile.username,
+  };
+}
+
+// --- Publishing ---
+
+async function waitUntilFinished(creationId, accessToken) {
+  for (let i = 0; i < 20; i++) {
+    const status = await call(`/${creationId}`, { fields: 'status,error_message', access_token: accessToken });
+    if (status.status === 'FINISHED') return;
+    if (status.status === 'ERROR') throw new Error(`[미디어 처리 실패] ${JSON.stringify(status)}`);
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+  throw new Error('미디어 처리 대기 시간 초과 (100초)');
+}
+
+async function createContainer(userId, accessToken, params) {
+  const container = await call(`/${userId}/threads`, { ...params, access_token: accessToken }, 'POST');
+  await waitUntilFinished(container.id, accessToken);
+  return container.id;
+}
+
+async function publishContainer(userId, accessToken, creationId) {
+  const published = await call(
+    `/${userId}/threads_publish`,
+    { creation_id: creationId, access_token: accessToken },
+    'POST'
+  );
+  return published.id;
+}
+
+async function buildMainCreationId(userId, accessToken, { text, imageUrl, videoUrl }) {
+  if (imageUrl && videoUrl) {
+    const imageItemId = await createContainer(userId, accessToken, {
+      media_type: 'IMAGE',
+      image_url: imageUrl,
+      is_carousel_item: 'true',
+    });
+    const videoItemId = await createContainer(userId, accessToken, {
+      media_type: 'VIDEO',
+      video_url: videoUrl,
+      is_carousel_item: 'true',
+    });
+    return createContainer(userId, accessToken, {
+      media_type: 'CAROUSEL',
+      children: `${imageItemId},${videoItemId}`,
+      text,
+    });
+  }
+  if (videoUrl) return createContainer(userId, accessToken, { media_type: 'VIDEO', video_url: videoUrl, text });
+  if (imageUrl) return createContainer(userId, accessToken, { media_type: 'IMAGE', image_url: imageUrl, text });
+  return createContainer(userId, accessToken, { media_type: 'TEXT', text });
+}
+
+async function publishReply(userId, accessToken, postId, replyText) {
+  const replyContainerId = await createContainer(userId, accessToken, {
+    media_type: 'TEXT',
+    text: replyText,
+    reply_to_id: postId,
+  });
+  return publishContainer(userId, accessToken, replyContainerId);
+}
+
+async function publishPost(userId, accessToken, { text, imageUrl, videoUrl, replyText }) {
+  const creationId = await buildMainCreationId(userId, accessToken, { text, imageUrl, videoUrl });
+  const postId = await publishContainer(userId, accessToken, creationId);
+  const replyId = replyText ? await publishReply(userId, accessToken, postId, replyText) : null;
+  return { postId, replyId };
+}
+
+module.exports = {
+  buildAuthorizeUrl,
+  loginWithCode,
+  buildMainCreationId,
+  publishContainer,
+  publishReply,
+  publishPost,
+};
