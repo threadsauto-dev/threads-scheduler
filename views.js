@@ -160,13 +160,13 @@ const composeForm = (channels, message, upcomingPending = []) => layout('글쓰�
             upBtn.type = 'button';
             upBtn.textContent = '↑';
             upBtn.disabled = idx === 0;
-            upBtn.style.cssText = 'flex:1; font-size:11px; padding:2px 0; border:1px solid #ddd; border-radius:4px; background:#fff; cursor:pointer; opacity:' + (idx === 0 ? '0.3' : '1') + ';';
+            upBtn.style.cssText = 'flex:1; font-size:11px; padding:2px 0; border:1px solid #ddd; border-radius:4px; background:#fff; color:#333; cursor:pointer; opacity:' + (idx === 0 ? '0.3' : '1') + ';';
             upBtn.onclick = function () { swap(idx, idx - 1); };
             var downBtn = document.createElement('button');
             downBtn.type = 'button';
             downBtn.textContent = '↓';
             downBtn.disabled = idx === total - 1;
-            downBtn.style.cssText = 'flex:1; font-size:11px; padding:2px 0; border:1px solid #ddd; border-radius:4px; background:#fff; cursor:pointer; opacity:' + (idx === total - 1 ? '0.3' : '1') + ';';
+            downBtn.style.cssText = 'flex:1; font-size:11px; padding:2px 0; border:1px solid #ddd; border-radius:4px; background:#fff; color:#333; cursor:pointer; opacity:' + (idx === total - 1 ? '0.3' : '1') + ';';
             downBtn.onclick = function () { swap(idx, idx + 1); };
             controls.appendChild(upBtn);
             controls.appendChild(downBtn);
@@ -220,7 +220,7 @@ const composeForm = (channels, message, upcomingPending = []) => layout('글쓰�
     </script>
 
     <label>댓글 (선택)</label>
-    <textarea name="replyText" rows="3" placeholder="게시 후 자동으로 달릴 댓글"></textarea>
+    <textarea name="replyText" rows="6" placeholder="게시 후 자동으로 달릴 댓글"></textarea>
 
     <label>발행 날짜</label>
     <input type="date" name="scheduledDate" id="scheduledDate" required />
