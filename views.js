@@ -6,6 +6,22 @@ const formatKst = (date) => new Date(date).toLocaleString('ko-KR', { timeZone: '
 const escapeHtml = (str) =>
   String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// 예약 수정 폼에 날짜/시/분 select를 KST 기준으로 미리 채우기 위한 분해.
+function kstDateInputParts(date) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(date));
+  const get = (type) => parts.find((p) => p.type === type).value;
+  const hour = get('hour') === '24' ? '00' : get('hour'); // 일부 환경의 자정 시간 표기(24) 보정
+  return { date: `${get('year')}-${get('month')}-${get('day')}`, hour, minute: get('minute') };
+}
+
 const layout = (title, body) => `<!doctype html>
 <html lang="ko">
 <head>
@@ -75,10 +91,15 @@ const channelsList = (channels) => layout('채널', `
 `);
 
 const cancelForm = (postId, redirectTo) => `
-  <form method="post" action="/posts/${postId}/cancel" style="margin:0;" onsubmit="return confirm('이 예약을 취소할까요?');">
+  <form method="post" action="/posts/${postId}/cancel" style="margin:0; display:inline-block;" onsubmit="return confirm('이 예약을 취소할까요?');">
     <input type="hidden" name="redirectTo" value="${redirectTo}" />
     <button type="submit" class="cancel-btn">취소</button>
   </form>`;
+
+const editLink = (postId) =>
+  `<a href="/compose/${postId}/edit" style="margin-right:8px; font-size:13px; color:#06c; font-weight:600;">수정</a>`;
+
+const pendingActions = (post, redirectTo) => `${editLink(post.id)}${cancelForm(post.id, redirectTo)}`;
 
 const upcomingList = (posts) => {
   if (posts.length === 0) return '';
@@ -92,21 +113,27 @@ const upcomingList = (posts) => {
       <td>@${p.username}</td>
       <td>${formatKst(p.scheduled_at)}</td>
       <td>${(p.text || '').slice(0, 30)}</td>
-      <td>${cancelForm(p.id, '/compose')}</td>
+      <td>${pendingActions(p, '/compose')}</td>
     </tr>`
       )
       .join('')}
   </table>`;
 };
 
-const composeForm = (channels, message, upcomingPending = [], selectedChannelId) => layout('글쓰기', `
+const composeForm = (channels, message, upcomingPending = [], selectedChannelId, editingPost = null) => layout('글쓰기', `
   ${nav()}
   <h1>글쓰기</h1>
   ${message ? `<p style="background:#f0f9f0;padding:12px;border-radius:8px;">${escapeHtml(message)}</p>` : ''}
   ${
+    editingPost
+      ? `<p style="background:#eef4ff;padding:12px;border-radius:8px;">예약 #${editingPost.id} 수정 중입니다. <a href="/compose">새 글 작성으로 돌아가기</a></p>`
+      : ''
+  }
+  ${
     channels.length === 0
       ? `<p>먼저 <a href="/channels/connect">채널을 연결</a>해주세요.</p>`
       : `<form method="post" action="/compose" enctype="multipart/form-data">
+    ${editingPost ? `<input type="hidden" name="editId" value="${editingPost.id}" />` : ''}
     <label>채널</label>
     <select name="channelId" required>
       ${channels
@@ -117,14 +144,94 @@ const composeForm = (channels, message, upcomingPending = [], selectedChannelId)
         .join('')}
     </select>
     <label>본문</label>
-    <textarea name="text" rows="5" required placeholder="게시할 내용을 입력하세요"></textarea>
+    <textarea name="text" rows="5" required placeholder="게시할 내용을 입력하세요">${editingPost ? escapeHtml(editingPost.text || '') : ''}</textarea>
 
-    <label>미디어 (이미지/영상, 최대 20개, 선택)</label>
+    ${
+      editingPost && (editingPost.media || []).length > 0
+        ? `<label>기존 미디어 (순서 변경/삭제 가능)</label>
+    <div id="existingMediaList" style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:8px;"></div>
+    <input type="hidden" name="existingMedia" id="existingMediaField" value="" />`
+        : ''
+    }
+
+    <label>${editingPost ? '새 이미지/영상 추가 (선택)' : '미디어 (이미지/영상, 최대 20개, 선택)'}</label>
     <div id="mediaDropZone" style="border:2px dashed #ccc; border-radius:8px; padding:20px; text-align:center; margin-bottom:8px; cursor:pointer; color:#777; font-size:14px;">
       클릭해서 파일 선택, 끌어다 놓기, 또는 이미지 붙여넣기(Ctrl+V)
     </div>
     <input type="file" id="mediaFileInput" name="mediaFiles" accept="image/*,video/*" multiple style="display:none" />
     <div id="mediaPreviewList" style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:16px;"></div>
+    ${
+      editingPost && (editingPost.media || []).length > 0
+        ? `<script>
+      (function () {
+        var existingMedia = ${JSON.stringify(editingPost.media || []).replace(/</g, '\\u003c')};
+        var list = document.getElementById('existingMediaList');
+        var field = document.getElementById('existingMediaField');
+
+        function swapExisting(i, j) {
+          var tmp = existingMedia[i];
+          existingMedia[i] = existingMedia[j];
+          existingMedia[j] = tmp;
+          renderExisting();
+        }
+
+        function renderExisting() {
+          list.innerHTML = '';
+          field.value = JSON.stringify(existingMedia);
+          var total = existingMedia.length;
+          existingMedia.forEach(function (item, idx) {
+            var box = document.createElement('div');
+            box.style.cssText = 'position:relative; width:80px;';
+            if (item.type === 'video') {
+              var v = document.createElement('div');
+              v.style.cssText = 'width:80px; height:80px; background:#f0f0f0; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:24px;';
+              v.textContent = '🎬';
+              box.appendChild(v);
+            } else {
+              var img = document.createElement('img');
+              img.src = item.url;
+              img.style.cssText = 'width:80px; height:80px; object-fit:cover; border-radius:6px; display:block;';
+              box.appendChild(img);
+            }
+            var badge = document.createElement('span');
+            badge.style.cssText = 'position:absolute; top:2px; left:4px; color:#fff; font-size:11px; font-weight:600; text-shadow:0 0 3px #000;';
+            badge.textContent = String(idx + 1);
+            box.appendChild(badge);
+            var controls = document.createElement('div');
+            controls.style.cssText = 'display:flex; gap:2px; margin-top:2px;';
+            var upBtn = document.createElement('button');
+            upBtn.type = 'button';
+            upBtn.textContent = '↑';
+            upBtn.disabled = idx === 0;
+            upBtn.style.cssText = 'flex:1; font-size:11px; padding:2px 0; border:1px solid #ddd; border-radius:4px; background:#fff; color:#333; cursor:pointer; opacity:' + (idx === 0 ? '0.3' : '1') + ';';
+            upBtn.onclick = function () { swapExisting(idx, idx - 1); };
+            var downBtn = document.createElement('button');
+            downBtn.type = 'button';
+            downBtn.textContent = '↓';
+            downBtn.disabled = idx === total - 1;
+            downBtn.style.cssText = 'flex:1; font-size:11px; padding:2px 0; border:1px solid #ddd; border-radius:4px; background:#fff; color:#333; cursor:pointer; opacity:' + (idx === total - 1 ? '0.3' : '1') + ';';
+            downBtn.onclick = function () { swapExisting(idx, idx + 1); };
+            controls.appendChild(upBtn);
+            controls.appendChild(downBtn);
+            box.appendChild(controls);
+            var removeBtn = document.createElement('button');
+            removeBtn.type = 'button';
+            removeBtn.textContent = '✕';
+            removeBtn.style.cssText = 'position:absolute; top:-6px; right:-6px; width:20px; height:20px; border-radius:50%; border:none; background:#000; color:#fff; cursor:pointer; padding:0; font-size:11px; line-height:1;';
+            removeBtn.onclick = function () {
+              existingMedia = existingMedia.filter(function (_, i) { return i !== idx; });
+              renderExisting();
+            };
+            box.appendChild(removeBtn);
+            list.appendChild(box);
+          });
+        }
+
+        renderExisting();
+      })();
+    </script>`
+        : ''
+    }
     <script>
       (function () {
         var dt = new DataTransfer();
@@ -239,23 +346,34 @@ const composeForm = (channels, message, upcomingPending = [], selectedChannelId)
     </script>
 
     <label>댓글 (선택)</label>
-    <textarea name="replyText" rows="6" placeholder="게시 후 자동으로 달릴 댓글"></textarea>
+    <textarea name="replyText" rows="6" placeholder="게시 후 자동으로 달릴 댓글">${editingPost ? escapeHtml(editingPost.reply_text || '') : ''}</textarea>
 
     <label>발행 날짜</label>
-    <input type="date" name="scheduledDate" id="scheduledDate" required />
+    <input type="date" name="scheduledDate" id="scheduledDate" required ${editingPost ? `value="${kstDateInputParts(editingPost.scheduled_at).date}"` : ''} />
 
     <label>발행 시각 (24시간제)</label>
     <div style="display:flex; align-items:center; gap:6px; margin-bottom:16px;">
       <select name="scheduledHour" id="scheduledHour" required style="width:auto; margin:0;">
-        ${Array.from({ length: 24 }, (_, h) => `<option value="${String(h).padStart(2, '0')}">${String(h).padStart(2, '0')}</option>`).join('')}
+        ${Array.from({ length: 24 }, (_, h) => {
+          const v = String(h).padStart(2, '0');
+          const sel = editingPost && kstDateInputParts(editingPost.scheduled_at).hour === v ? 'selected' : '';
+          return `<option value="${v}" ${sel}>${v}</option>`;
+        }).join('')}
       </select>
       시
       <select name="scheduledMinute" id="scheduledMinute" required style="width:auto; margin:0;">
-        ${Array.from({ length: 60 }, (_, m) => `<option value="${String(m).padStart(2, '0')}">${String(m).padStart(2, '0')}</option>`).join('')}
+        ${Array.from({ length: 60 }, (_, m) => {
+          const v = String(m).padStart(2, '0');
+          const sel = editingPost && kstDateInputParts(editingPost.scheduled_at).minute === v ? 'selected' : '';
+          return `<option value="${v}" ${sel}>${v}</option>`;
+        }).join('')}
       </select>
       분
     </div>
-    <script>
+    ${
+      editingPost
+        ? ''
+        : `<script>
       (function () {
         var now = new Date();
         var dateEl = document.getElementById('scheduledDate');
@@ -265,9 +383,10 @@ const composeForm = (channels, message, upcomingPending = [], selectedChannelId)
         document.getElementById('scheduledHour').value = String(now.getHours()).padStart(2, '0');
         document.getElementById('scheduledMinute').value = String(now.getMinutes()).padStart(2, '0');
       })();
-    </script>
+    </script>`
+    }
 
-    <button type="submit">게시 / 예약</button>
+    <button type="submit">${editingPost ? '수정 저장' : '게시 / 예약'}</button>
   </form>`
   }
   ${upcomingList(upcomingPending)}
@@ -286,7 +405,7 @@ const postsHistory = (posts) => layout('발행 내역', `
         <td>${(p.text || '').slice(0, 30)}</td>
         <td>${formatKst(p.scheduled_at)}</td>
         <td><span class="badge badge-${p.status}">${p.status}</span></td>
-        <td>${p.status === 'pending' ? cancelForm(p.id, '/posts') : ''}</td>
+        <td>${p.status === 'pending' ? pendingActions(p, '/posts') : ''}</td>
       </tr>`
         )
         .join('') || '<tr><td colspan="5">기록이 없습니다.</td></tr>'

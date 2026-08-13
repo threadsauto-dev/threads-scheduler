@@ -112,12 +112,24 @@ app.get('/compose', requireAdmin, async (req, res) => {
   );
 });
 
+app.get('/compose/:id/edit', requireAdmin, async (req, res) => {
+  const { rows } = await pool.query(`SELECT * FROM scheduled_posts WHERE id = $1 AND status = 'pending'`, [
+    req.params.id,
+  ]);
+  const editingPost = rows[0];
+  if (!editingPost) {
+    return res.status(404).send(views.errorPage('수정할 예약을 찾을 수 없습니다. 이미 발행되었거나 취소되었을 수 있어요.'));
+  }
+  const { rows: channels } = await pool.query('SELECT * FROM channels ORDER BY created_at DESC');
+  res.send(views.composeForm(channels, null, await getUpcomingPending(), editingPost.channel_id, editingPost));
+});
+
 app.post(
   '/compose',
   requireAdmin,
   upload.fields([{ name: 'mediaFiles', maxCount: 20 }]),
   async (req, res) => {
-    const { channelId, text, replyText, scheduledDate, scheduledHour, scheduledMinute } = req.body;
+    const { channelId, text, replyText, scheduledDate, scheduledHour, scheduledMinute, editId } = req.body;
 
     const { rows: channelRows } = await pool.query('SELECT * FROM channels WHERE id = $1', [channelId]);
     const channel = channelRows[0];
@@ -129,14 +141,23 @@ app.post(
       return res.status(400).send(views.errorPage('과거 시각에는 예약할 수 없습니다.'));
     }
 
+    let existingMedia = [];
+    if (req.body.existingMedia) {
+      try {
+        existingMedia = JSON.parse(req.body.existingMedia);
+      } catch {
+        existingMedia = [];
+      }
+    }
+
     const files = req.files?.mediaFiles || [];
-    if (files.length > 20) {
+    if (existingMedia.length + files.length > 20) {
       return res.status(400).send(views.errorPage('이미지+영상은 합쳐서 최대 20개까지만 첨부할 수 있습니다.'));
     }
 
-    let media;
+    let newMedia;
     try {
-      media = await Promise.all(
+      newMedia = await Promise.all(
         files.map(async (file) => ({
           type: file.mimetype.startsWith('video/') ? 'video' : 'image',
           url: await storage.uploadFile(env, file.buffer, file.mimetype),
@@ -145,13 +166,30 @@ app.post(
     } catch (e) {
       return res.status(500).send(views.errorPage(`미디어 업로드 실패: ${e.message}`));
     }
+    const media = [...existingMedia, ...newMedia];
 
-    const { rows: inserted } = await pool.query(
-      `INSERT INTO scheduled_posts (channel_id, text, media, reply_text, scheduled_at)
-     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [channel.id, text, JSON.stringify(media), replyText || null, scheduledAt]
-    );
-    const post = inserted[0];
+    let post;
+    if (editId) {
+      // 발행 시각이 지나 크론이 이미 집어간(processing/published) 예약은 수정 못 하게 status='pending'을 같이 확인.
+      const { rows: updated } = await pool.query(
+        `UPDATE scheduled_posts SET channel_id = $1, text = $2, media = $3, reply_text = $4, scheduled_at = $5
+         WHERE id = $6 AND status = 'pending' RETURNING *`,
+        [channel.id, text, JSON.stringify(media), replyText || null, scheduledAt, editId]
+      );
+      post = updated[0];
+      if (!post) {
+        return res
+          .status(400)
+          .send(views.errorPage('이미 처리되어 수정할 수 없는 예약입니다. 발행 내역에서 확인해주세요.'));
+      }
+    } else {
+      const { rows: inserted } = await pool.query(
+        `INSERT INTO scheduled_posts (channel_id, text, media, reply_text, scheduled_at)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+        [channel.id, text, JSON.stringify(media), replyText || null, scheduledAt]
+      );
+      post = inserted[0];
+    }
 
     const isImmediate = scheduledAt.getTime() <= Date.now() + 5000;
     rememberLastChannel(res, req, channel.id);
@@ -170,7 +208,9 @@ app.post(
       }
     }
 
-    res.redirect(`/compose?msg=${encodeURIComponent(`${views.formatKst(scheduledAt)}에 예약되었습니다.`)}`);
+    res.redirect(
+      `/compose?msg=${encodeURIComponent(`${views.formatKst(scheduledAt)}에 ${editId ? '수정' : ''}예약되었습니다.`)}`
+    );
   }
 );
 
