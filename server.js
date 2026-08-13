@@ -35,11 +35,21 @@ app.get('/auth/login', (req, res) => {
   res.redirect(threads.buildAuthorizeUrl(env));
 });
 
+// 같은 code로 요청이 중복 도착해도(느린 콜드 스타트 때 브라우저가 재시도하는 경우 등) Meta에 두 번 교환 요청을 보내지 않도록 캐싱.
+const codeExchangeCache = new Map(); // code -> Promise<loginResult>
+
 app.get('/auth/callback', async (req, res) => {
   const { code, error_description } = req.query;
   if (error_description) return res.status(400).send(views.errorPage(String(error_description)));
+  if (!code) return res.status(400).send(views.errorPage('code가 없습니다.'));
   try {
-    const { accessToken, threadsUserId, username, expiresIn } = await threads.loginWithCode(env, code);
+    let loginPromise = codeExchangeCache.get(code);
+    if (!loginPromise) {
+      loginPromise = threads.loginWithCode(env, code);
+      codeExchangeCache.set(code, loginPromise);
+      loginPromise.catch(() => codeExchangeCache.delete(code));
+    }
+    const { accessToken, threadsUserId, username, expiresIn } = await loginPromise;
     res.cookie('session', JSON.stringify({ accessToken, threadsUserId, username }), {
       httpOnly: true,
       signed: true,
