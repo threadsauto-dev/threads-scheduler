@@ -404,9 +404,10 @@ const postsHistory = (posts) => layout('발행 내역', `
         <td>@${p.username}</td>
         <td>${(p.text || '').slice(0, 30)}</td>
         <td>${formatKst(p.scheduled_at)}</td>
-        <td><span class="badge badge-${p.status}">${p.status}</span></td>
+        <td><span class="badge badge-${p.status}" ${p.status === 'failed' && p.error_message ? `title="${escapeHtml(p.error_message)}"` : ''}>${p.status}</span></td>
         <td>${p.status === 'pending' ? pendingActions(p, '/posts') : ''}</td>
-      </tr>`
+      </tr>
+      ${p.status === 'failed' && p.error_message ? `<tr><td colspan="5" style="font-size:12px; color:#c00; padding-top:0;">${escapeHtml(p.error_message)}</td></tr>` : ''}`
         )
         .join('') || '<tr><td colspan="5">기록이 없습니다.</td></tr>'
     }
