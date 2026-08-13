@@ -95,9 +95,21 @@ async function getUpcomingPending() {
   return rows;
 }
 
+function rememberLastChannel(res, req, channelId) {
+  res.cookie('lastChannelId', String(channelId), {
+    httpOnly: true,
+    signed: true,
+    secure: req.protocol === 'https',
+    sameSite: 'lax',
+    maxAge: 90 * 24 * 3600 * 1000,
+  });
+}
+
 app.get('/compose', requireAdmin, async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM channels ORDER BY created_at DESC');
-  res.send(views.composeForm(rows, null, await getUpcomingPending()));
+  res.send(
+    views.composeForm(rows, req.query.msg || null, await getUpcomingPending(), req.signedCookies.lastChannelId)
+  );
 });
 
 app.post(
@@ -141,29 +153,33 @@ app.post(
     );
     const post = inserted[0];
 
-    const { rows: channels } = await pool.query('SELECT * FROM channels ORDER BY created_at DESC');
     const isImmediate = scheduledAt.getTime() <= Date.now() + 5000;
+    rememberLastChannel(res, req, channel.id);
 
+    // 완료 메시지는 직접 렌더하지 않고 리다이렉트(PRG 패턴)로 넘긴다 — 그냥 렌더하면
+    // 느린 응답 중 새로고침/뒤로가기 시 브라우저가 폼을 다시 제출해 같은 예약이
+    // 중복으로 생길 수 있다(실제로 이 문제로 같은 예약이 두 번 잡히는 걸 확인함).
     if (isImmediate) {
       try {
         const { postId } = await publisher.publishOne(post, channel);
-        return res.send(
-          views.composeForm(
-            channels,
-            `게시 완료: https://www.threads.net/@${channel.username}/post/${postId}`,
-            await getUpcomingPending()
-          )
+        return res.redirect(
+          `/compose?msg=${encodeURIComponent(`게시 완료: https://www.threads.net/@${channel.username}/post/${postId}`)}`
         );
       } catch (e) {
         return res.status(500).send(views.errorPage(e.message));
       }
     }
 
-    res.send(
-      views.composeForm(channels, `${views.formatKst(scheduledAt)}에 예약되었습니다.`, await getUpcomingPending())
-    );
+    res.redirect(`/compose?msg=${encodeURIComponent(`${views.formatKst(scheduledAt)}에 예약되었습니다.`)}`);
   }
 );
+
+app.post('/posts/:id/cancel', requireAdmin, async (req, res) => {
+  await pool.query(`UPDATE scheduled_posts SET status = 'canceled' WHERE id = $1 AND status = 'pending'`, [
+    req.params.id,
+  ]);
+  res.redirect(req.body.redirectTo === '/posts' ? '/posts' : '/compose');
+});
 
 app.get('/posts', requireAdmin, async (req, res) => {
   const { rows } = await pool.query(

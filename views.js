@@ -1,6 +1,11 @@
 // toLocaleString('ko-KR')만으로는 서버 실행 환경의 시간대(Render는 UTC)를 그대로 쓰고 한국어 표기만 입혀서 실제 KST와 어긋난다 — timeZone을 명시해야 한다.
 const formatKst = (date) => new Date(date).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
 
+// /compose의 완료 메시지는 새로고침 시 폼 재제출(중복 예약)을 막으려고 리다이렉트의
+// 쿼리스트링(req.query.msg)으로 전달한다 — URL을 통해 온 값이라 그대로 꽂으면 안 되고 escape 필요.
+const escapeHtml = (str) =>
+  String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
 const layout = (title, body) => `<!doctype html>
 <html lang="ko">
 <head>
@@ -22,6 +27,8 @@ const layout = (title, body) => `<!doctype html>
   .badge-pending { background: #fff3cd; }
   .badge-published { background: #d4edda; }
   .badge-failed { background: #f8d7da; }
+  .badge-canceled { background: #e2e3e5; color: #555; }
+  .cancel-btn { background: #fff; color: #c00; border: 1px solid #f1b0b0; padding: 4px 10px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }
   footer { margin-top: 40px; font-size: 13px; color: #888; }
   footer a { color: #888; }
 </style>
@@ -67,35 +74,47 @@ const channelsList = (channels) => layout('채널', `
   <a class="button" href="/channels/connect">+ 새 채널 연결</a>
 `);
 
+const cancelForm = (postId, redirectTo) => `
+  <form method="post" action="/posts/${postId}/cancel" style="margin:0;" onsubmit="return confirm('이 예약을 취소할까요?');">
+    <input type="hidden" name="redirectTo" value="${redirectTo}" />
+    <button type="submit" class="cancel-btn">취소</button>
+  </form>`;
+
 const upcomingList = (posts) => {
   if (posts.length === 0) return '';
   return `
   <h3 style="margin-top:32px;">다가오는 예약 발행</h3>
   <table>
-    <tr><th>채널</th><th>예정 시각</th><th>본문</th></tr>
+    <tr><th>채널</th><th>예정 시각</th><th>본문</th><th>관리</th></tr>
     ${posts
       .map(
         (p) => `<tr>
       <td>@${p.username}</td>
       <td>${formatKst(p.scheduled_at)}</td>
       <td>${(p.text || '').slice(0, 30)}</td>
+      <td>${cancelForm(p.id, '/compose')}</td>
     </tr>`
       )
       .join('')}
   </table>`;
 };
 
-const composeForm = (channels, message, upcomingPending = []) => layout('글쓰기', `
+const composeForm = (channels, message, upcomingPending = [], selectedChannelId) => layout('글쓰기', `
   ${nav()}
   <h1>글쓰기</h1>
-  ${message ? `<p style="background:#f0f9f0;padding:12px;border-radius:8px;">${message}</p>` : ''}
+  ${message ? `<p style="background:#f0f9f0;padding:12px;border-radius:8px;">${escapeHtml(message)}</p>` : ''}
   ${
     channels.length === 0
       ? `<p>먼저 <a href="/channels/connect">채널을 연결</a>해주세요.</p>`
       : `<form method="post" action="/compose" enctype="multipart/form-data">
     <label>채널</label>
     <select name="channelId" required>
-      ${channels.map((c) => `<option value="${c.id}">@${c.username}</option>`).join('')}
+      ${channels
+        .map(
+          (c) =>
+            `<option value="${c.id}" ${String(c.id) === String(selectedChannelId) ? 'selected' : ''}>@${c.username}</option>`
+        )
+        .join('')}
     </select>
     <label>본문</label>
     <textarea name="text" rows="5" required placeholder="게시할 내용을 입력하세요"></textarea>
@@ -258,7 +277,7 @@ const postsHistory = (posts) => layout('발행 내역', `
   ${nav()}
   <h1>발행 내역</h1>
   <table>
-    <tr><th>채널</th><th>본문</th><th>예정 시각</th><th>상태</th></tr>
+    <tr><th>채널</th><th>본문</th><th>예정 시각</th><th>상태</th><th>관리</th></tr>
     ${
       posts
         .map(
@@ -267,9 +286,10 @@ const postsHistory = (posts) => layout('발행 내역', `
         <td>${(p.text || '').slice(0, 30)}</td>
         <td>${formatKst(p.scheduled_at)}</td>
         <td><span class="badge badge-${p.status}">${p.status}</span></td>
+        <td>${p.status === 'pending' ? cancelForm(p.id, '/posts') : ''}</td>
       </tr>`
         )
-        .join('') || '<tr><td colspan="4">기록이 없습니다.</td></tr>'
+        .join('') || '<tr><td colspan="5">기록이 없습니다.</td></tr>'
     }
   </table>
 `);
