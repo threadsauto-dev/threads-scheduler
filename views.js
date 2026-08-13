@@ -71,21 +71,36 @@ const composeForm = (channels, message) => layout('글쓰기', `
   ${
     channels.length === 0
       ? `<p>먼저 <a href="/channels/connect">채널을 연결</a>해주세요.</p>`
-      : `<form method="post" action="/compose">
+      : `<form method="post" action="/compose" enctype="multipart/form-data">
     <label>채널</label>
     <select name="channelId" required>
       ${channels.map((c) => `<option value="${c.id}">@${c.username}</option>`).join('')}
     </select>
     <label>본문</label>
     <textarea name="text" rows="5" required placeholder="게시할 내용을 입력하세요"></textarea>
-    <label>이미지 URL (선택)</label>
-    <input type="url" name="imageUrl" placeholder="https://..." />
-    <label>영상 URL (선택)</label>
-    <input type="url" name="videoUrl" placeholder="https://..." />
+
+    <label>영상 (선택)</label>
+    <input type="file" name="videoFile" accept="video/*" />
+    <input type="url" name="videoUrl" placeholder="또는 URL 직접 입력" />
+
+    <label>이미지 (선택)</label>
+    <input type="file" name="imageFile" accept="image/*" />
+    <input type="url" name="imageUrl" placeholder="또는 URL 직접 입력" />
+
     <label>댓글 (선택)</label>
     <input type="text" name="replyText" placeholder="게시 후 자동으로 달릴 댓글" />
-    <label>몇 분 후 게시할까요? (0이면 즉시)</label>
-    <input type="number" name="delayMinutes" value="0" min="0" />
+
+    <label>발행 시각</label>
+    <input type="datetime-local" name="scheduledAt" id="scheduledAt" required />
+    <script>
+      (function () {
+        var el = document.getElementById('scheduledAt');
+        var local = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+        el.min = local;
+        el.value = local;
+      })();
+    </script>
+
     <button type="submit">게시 / 예약</button>
   </form>`
   }

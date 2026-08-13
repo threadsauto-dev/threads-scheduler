@@ -1,15 +1,24 @@
 const express = require('express');
 const cookieParser = require('cookie-parser');
+const multer = require('multer');
 const { loadEnv } = require('./env');
 const threads = require('./threads');
 const views = require('./views');
 const { pool, migrate } = require('./db');
 const publisher = require('./publisher');
+const storage = require('./storage');
 
 const env = loadEnv();
 const app = express();
 app.use(cookieParser(env.COOKIE_SECRET));
 app.use(express.urlencoded({ extended: false }));
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 30 * 1024 * 1024 } });
+
+// datetime-local 입력값("YYYY-MM-DDTHH:mm")은 시간대 정보가 없다 — 이 앱은 한국 사용자 전용이므로 KST(+09:00)로 해석한다.
+function parseKstDatetimeLocal(value) {
+  return new Date(`${value}:00+09:00`);
+}
 
 function requireAdmin(req, res, next) {
   if (req.signedCookies.admin === '1') return next();
@@ -81,37 +90,61 @@ app.get('/compose', requireAdmin, async (req, res) => {
   res.send(views.composeForm(rows));
 });
 
-app.post('/compose', requireAdmin, async (req, res) => {
-  const { channelId, text, imageUrl, videoUrl, replyText, delayMinutes } = req.body;
-  const delay = Math.max(0, parseInt(delayMinutes, 10) || 0);
+app.post(
+  '/compose',
+  requireAdmin,
+  upload.fields([
+    { name: 'videoFile', maxCount: 1 },
+    { name: 'imageFile', maxCount: 1 },
+  ]),
+  async (req, res) => {
+    const { channelId, text, imageUrl, videoUrl, replyText, scheduledAt: scheduledAtRaw } = req.body;
 
-  const { rows: channelRows } = await pool.query('SELECT * FROM channels WHERE id = $1', [channelId]);
-  const channel = channelRows[0];
-  if (!channel) return res.status(400).send(views.errorPage('채널을 찾을 수 없습니다.'));
+    const { rows: channelRows } = await pool.query('SELECT * FROM channels WHERE id = $1', [channelId]);
+    const channel = channelRows[0];
+    if (!channel) return res.status(400).send(views.errorPage('채널을 찾을 수 없습니다.'));
 
-  const scheduledAt = new Date(Date.now() + delay * 60000);
-  const { rows: inserted } = await pool.query(
-    `INSERT INTO scheduled_posts (channel_id, text, image_url, video_url, reply_text, scheduled_at)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-    [channel.id, text, imageUrl || null, videoUrl || null, replyText || null, scheduledAt]
-  );
-  const post = inserted[0];
-
-  const { rows: channels } = await pool.query('SELECT * FROM channels ORDER BY created_at DESC');
-
-  if (delay === 0) {
-    try {
-      const { postId } = await publisher.publishOne(post, channel);
-      return res.send(
-        views.composeForm(channels, `게시 완료: https://www.threads.net/@${channel.username}/post/${postId}`)
-      );
-    } catch (e) {
-      return res.status(500).send(views.errorPage(e.message));
+    const scheduledAt = parseKstDatetimeLocal(scheduledAtRaw);
+    if (isNaN(scheduledAt.getTime())) return res.status(400).send(views.errorPage('발행 시각이 올바르지 않습니다.'));
+    if (scheduledAt.getTime() < Date.now() - 5000) {
+      return res.status(400).send(views.errorPage('과거 시각에는 예약할 수 없습니다.'));
     }
-  }
 
-  res.send(views.composeForm(channels, `${delay}분 후(${scheduledAt.toLocaleString('ko-KR')}) 예약되었습니다.`));
-});
+    let finalImageUrl = imageUrl || null;
+    let finalVideoUrl = videoUrl || null;
+    try {
+      const imageFile = req.files?.imageFile?.[0];
+      if (imageFile) finalImageUrl = await storage.uploadFile(env, imageFile.buffer, imageFile.mimetype);
+      const videoFile = req.files?.videoFile?.[0];
+      if (videoFile) finalVideoUrl = await storage.uploadFile(env, videoFile.buffer, videoFile.mimetype);
+    } catch (e) {
+      return res.status(500).send(views.errorPage(`미디어 업로드 실패: ${e.message}`));
+    }
+
+    const { rows: inserted } = await pool.query(
+      `INSERT INTO scheduled_posts (channel_id, text, image_url, video_url, reply_text, scheduled_at)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [channel.id, text, finalImageUrl, finalVideoUrl, replyText || null, scheduledAt]
+    );
+    const post = inserted[0];
+
+    const { rows: channels } = await pool.query('SELECT * FROM channels ORDER BY created_at DESC');
+    const isImmediate = scheduledAt.getTime() <= Date.now() + 5000;
+
+    if (isImmediate) {
+      try {
+        const { postId } = await publisher.publishOne(post, channel);
+        return res.send(
+          views.composeForm(channels, `게시 완료: https://www.threads.net/@${channel.username}/post/${postId}`)
+        );
+      } catch (e) {
+        return res.status(500).send(views.errorPage(e.message));
+      }
+    }
+
+    res.send(views.composeForm(channels, `${scheduledAt.toLocaleString('ko-KR')}에 예약되었습니다.`));
+  }
+);
 
 app.get('/posts', requireAdmin, async (req, res) => {
   const { rows } = await pool.query(
