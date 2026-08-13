@@ -92,4 +92,9 @@ const terms = () => layout('이용약관', `
   <p>${CONTACT_EMAIL}</p>
 `);
 
-module.exports = { landing, dashboard, scheduled, published, errorPage, privacy, terms };
+const deleteStatus = (id) => layout('삭제 요청 처리 완료', `
+  <h1>삭제 요청이 처리되었습니다</h1>
+  <p>요청 번호: ${id || '-'}</p>
+`);
+
+module.exports = { landing, dashboard, scheduled, published, errorPage, privacy, terms, deleteStatus };

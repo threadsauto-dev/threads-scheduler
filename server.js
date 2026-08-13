@@ -101,5 +101,20 @@ app.post('/dashboard/publish', requireSession, async (req, res) => {
 app.get('/privacy', (req, res) => res.send(views.privacy()));
 app.get('/terms', (req, res) => res.send(views.terms()));
 
+// Meta가 사용자의 앱 연결 해제/삭제 요청 시 호출하는 콜백. 세션은 쿠키 기반이라 별도 삭제할 서버측 저장소가 없음 — 그냥 확인 응답만 반환.
+app.post('/auth/deauthorize', (req, res) => res.sendStatus(200));
+
+app.post('/auth/delete', (req, res) => {
+  const confirmationCode = `del_${Date.now()}`;
+  res.json({
+    url: `${req.protocol}://${req.get('host')}/auth/delete/status?id=${confirmationCode}`,
+    confirmation_code: confirmationCode,
+  });
+});
+
+app.get('/auth/delete/status', (req, res) => {
+  res.send(views.deleteStatus(req.query.id));
+});
+
 const port = env.PORT || 5000;
 app.listen(port, () => console.log(`threads-scheduler demo listening on :${port}`));
