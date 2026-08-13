@@ -322,7 +322,11 @@ const composeForm = (channels, message, upcomingPending = [], selectedChannelId,
         zone.addEventListener('drop', function (e) {
           e.preventDefault();
           zone.style.borderColor = '#ccc';
-          Array.from(e.dataTransfer.files).forEach(function (f) { dt.items.add(f); });
+          console.log('[mediaDrop] drop 발생, types=', Array.from(e.dataTransfer.types), 'files.length=', e.dataTransfer.files.length);
+          Array.from(e.dataTransfer.files).forEach(function (f) {
+            console.log('[mediaDrop] 파일 받음', f.name, f.type, f.size);
+            dt.items.add(f);
+          });
           input.files = dt.files;
           render();
         });
