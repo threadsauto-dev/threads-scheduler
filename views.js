@@ -111,14 +111,29 @@ const composeForm = (channels, message, upcomingPending = []) => layout('글쓰�
     <label>댓글 (선택)</label>
     <input type="text" name="replyText" placeholder="게시 후 자동으로 달릴 댓글" />
 
-    <label>발행 시각</label>
-    <input type="datetime-local" name="scheduledAt" id="scheduledAt" required />
+    <label>발행 날짜</label>
+    <input type="date" name="scheduledDate" id="scheduledDate" required />
+
+    <label>발행 시각 (24시간제)</label>
+    <div style="display:flex; align-items:center; gap:6px; margin-bottom:16px;">
+      <select name="scheduledHour" id="scheduledHour" required style="width:auto; margin:0;">
+        ${Array.from({ length: 24 }, (_, h) => `<option value="${String(h).padStart(2, '0')}">${String(h).padStart(2, '0')}</option>`).join('')}
+      </select>
+      시
+      <select name="scheduledMinute" id="scheduledMinute" required style="width:auto; margin:0;">
+        ${Array.from({ length: 60 }, (_, m) => `<option value="${String(m).padStart(2, '0')}">${String(m).padStart(2, '0')}</option>`).join('')}
+      </select>
+      분
+    </div>
     <script>
       (function () {
-        var el = document.getElementById('scheduledAt');
-        var local = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-        el.min = local;
-        el.value = local;
+        var now = new Date();
+        var dateEl = document.getElementById('scheduledDate');
+        var y = now.getFullYear(), m = String(now.getMonth() + 1).padStart(2, '0'), d = String(now.getDate()).padStart(2, '0');
+        dateEl.min = y + '-' + m + '-' + d;
+        dateEl.value = y + '-' + m + '-' + d;
+        document.getElementById('scheduledHour').value = String(now.getHours()).padStart(2, '0');
+        document.getElementById('scheduledMinute').value = String(now.getMinutes()).padStart(2, '0');
       })();
     </script>
 

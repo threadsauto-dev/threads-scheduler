@@ -108,13 +108,13 @@ app.post(
     { name: 'imageFile', maxCount: 1 },
   ]),
   async (req, res) => {
-    const { channelId, text, imageUrl, videoUrl, replyText, scheduledAt: scheduledAtRaw } = req.body;
+    const { channelId, text, imageUrl, videoUrl, replyText, scheduledDate, scheduledHour, scheduledMinute } = req.body;
 
     const { rows: channelRows } = await pool.query('SELECT * FROM channels WHERE id = $1', [channelId]);
     const channel = channelRows[0];
     if (!channel) return res.status(400).send(views.errorPage('채널을 찾을 수 없습니다.'));
 
-    const scheduledAt = parseKstDatetimeLocal(scheduledAtRaw);
+    const scheduledAt = parseKstDatetimeLocal(`${scheduledDate}T${scheduledHour}:${scheduledMinute}`);
     if (isNaN(scheduledAt.getTime())) return res.status(400).send(views.errorPage('발행 시각이 올바르지 않습니다.'));
     if (scheduledAt.getTime() < Date.now() - 5000) {
       return res.status(400).send(views.errorPage('과거 시각에는 예약할 수 없습니다.'));
