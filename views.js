@@ -67,7 +67,25 @@ const channelsList = (channels) => layout('채널', `
   <a class="button" href="/channels/connect">+ 새 채널 연결</a>
 `);
 
-const composeForm = (channels, message) => layout('글쓰기', `
+const upcomingList = (posts) => {
+  if (posts.length === 0) return '';
+  return `
+  <h3 style="margin-top:32px;">다가오는 예약 발행</h3>
+  <table>
+    <tr><th>채널</th><th>예정 시각</th><th>본문</th></tr>
+    ${posts
+      .map(
+        (p) => `<tr>
+      <td>@${p.username}</td>
+      <td>${formatKst(p.scheduled_at)}</td>
+      <td>${(p.text || '').slice(0, 30)}</td>
+    </tr>`
+      )
+      .join('')}
+  </table>`;
+};
+
+const composeForm = (channels, message, upcomingPending = []) => layout('글쓰기', `
   ${nav()}
   <h1>글쓰기</h1>
   ${message ? `<p style="background:#f0f9f0;padding:12px;border-radius:8px;">${message}</p>` : ''}
@@ -107,6 +125,7 @@ const composeForm = (channels, message) => layout('글쓰기', `
     <button type="submit">게시 / 예약</button>
   </form>`
   }
+  ${upcomingList(upcomingPending)}
 `);
 
 const postsHistory = (posts) => layout('발행 내역', `

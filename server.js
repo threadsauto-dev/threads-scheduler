@@ -85,9 +85,19 @@ app.get('/auth/callback', async (req, res) => {
   }
 });
 
+async function getUpcomingPending() {
+  const { rows } = await pool.query(
+    `SELECT sp.*, c.username FROM scheduled_posts sp
+     JOIN channels c ON c.id = sp.channel_id
+     WHERE sp.status = 'pending'
+     ORDER BY sp.scheduled_at ASC LIMIT 20`
+  );
+  return rows;
+}
+
 app.get('/compose', requireAdmin, async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM channels ORDER BY created_at DESC');
-  res.send(views.composeForm(rows));
+  res.send(views.composeForm(rows, null, await getUpcomingPending()));
 });
 
 app.post(
@@ -135,14 +145,20 @@ app.post(
       try {
         const { postId } = await publisher.publishOne(post, channel);
         return res.send(
-          views.composeForm(channels, `게시 완료: https://www.threads.net/@${channel.username}/post/${postId}`)
+          views.composeForm(
+            channels,
+            `게시 완료: https://www.threads.net/@${channel.username}/post/${postId}`,
+            await getUpcomingPending()
+          )
         );
       } catch (e) {
         return res.status(500).send(views.errorPage(e.message));
       }
     }
 
-    res.send(views.composeForm(channels, `${views.formatKst(scheduledAt)}에 예약되었습니다.`));
+    res.send(
+      views.composeForm(channels, `${views.formatKst(scheduledAt)}에 예약되었습니다.`, await getUpcomingPending())
+    );
   }
 );
 
