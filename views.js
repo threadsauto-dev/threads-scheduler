@@ -113,8 +113,25 @@ const composeForm = (channels, message, upcomingPending = []) => layout('글쓰�
         var input = document.getElementById('mediaFileInput');
         var preview = document.getElementById('mediaPreviewList');
 
+        function replaceFiles(files) {
+          var newDt = new DataTransfer();
+          files.forEach(function (f) { newDt.items.add(f); });
+          dt = newDt;
+          input.files = dt.files;
+          render();
+        }
+
+        function swap(i, j) {
+          var files = Array.from(dt.files);
+          var tmp = files[i];
+          files[i] = files[j];
+          files[j] = tmp;
+          replaceFiles(files);
+        }
+
         function render() {
           preview.innerHTML = '';
+          var total = dt.files.length;
           Array.from(dt.files).forEach(function (file, idx) {
             var item = document.createElement('div');
             item.style.cssText = 'position:relative; width:80px;';
@@ -129,20 +146,37 @@ const composeForm = (channels, message, upcomingPending = []) => layout('글쓰�
               box.textContent = '🎬';
               item.appendChild(box);
             }
+            var indexBadge = document.createElement('span');
+            indexBadge.style.cssText = 'position:absolute; top:2px; left:4px; color:#fff; font-size:11px; font-weight:600; text-shadow:0 0 3px #000;';
+            indexBadge.textContent = String(idx + 1);
+            item.appendChild(indexBadge);
             var name = document.createElement('div');
             name.style.cssText = 'font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
             name.textContent = file.name;
             item.appendChild(name);
+            var controls = document.createElement('div');
+            controls.style.cssText = 'display:flex; gap:2px; margin-top:2px;';
+            var upBtn = document.createElement('button');
+            upBtn.type = 'button';
+            upBtn.textContent = '↑';
+            upBtn.disabled = idx === 0;
+            upBtn.style.cssText = 'flex:1; font-size:11px; padding:2px 0; border:1px solid #ddd; border-radius:4px; background:#fff; cursor:pointer; opacity:' + (idx === 0 ? '0.3' : '1') + ';';
+            upBtn.onclick = function () { swap(idx, idx - 1); };
+            var downBtn = document.createElement('button');
+            downBtn.type = 'button';
+            downBtn.textContent = '↓';
+            downBtn.disabled = idx === total - 1;
+            downBtn.style.cssText = 'flex:1; font-size:11px; padding:2px 0; border:1px solid #ddd; border-radius:4px; background:#fff; cursor:pointer; opacity:' + (idx === total - 1 ? '0.3' : '1') + ';';
+            downBtn.onclick = function () { swap(idx, idx + 1); };
+            controls.appendChild(upBtn);
+            controls.appendChild(downBtn);
+            item.appendChild(controls);
             var removeBtn = document.createElement('button');
             removeBtn.type = 'button';
             removeBtn.textContent = '✕';
             removeBtn.style.cssText = 'position:absolute; top:-6px; right:-6px; width:20px; height:20px; border-radius:50%; border:none; background:#000; color:#fff; cursor:pointer; padding:0; font-size:11px; line-height:1;';
             removeBtn.onclick = function () {
-              var newDt = new DataTransfer();
-              Array.from(dt.files).forEach(function (f, i) { if (i !== idx) newDt.items.add(f); });
-              dt = newDt;
-              input.files = dt.files;
-              render();
+              replaceFiles(Array.from(dt.files).filter(function (f, i) { return i !== idx; }));
             };
             item.appendChild(removeBtn);
             preview.appendChild(item);
@@ -186,7 +220,7 @@ const composeForm = (channels, message, upcomingPending = []) => layout('글쓰�
     </script>
 
     <label>댓글 (선택)</label>
-    <input type="text" name="replyText" placeholder="게시 후 자동으로 달릴 댓글" />
+    <textarea name="replyText" rows="3" placeholder="게시 후 자동으로 달릴 댓글"></textarea>
 
     <label>발행 날짜</label>
     <input type="date" name="scheduledDate" id="scheduledDate" required />
