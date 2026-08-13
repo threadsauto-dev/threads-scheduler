@@ -100,13 +100,90 @@ const composeForm = (channels, message, upcomingPending = []) => layout('글쓰�
     <label>본문</label>
     <textarea name="text" rows="5" required placeholder="게시할 내용을 입력하세요"></textarea>
 
-    <label>영상 (선택)</label>
-    <input type="file" name="videoFile" accept="video/*" />
-    <input type="url" name="videoUrl" placeholder="또는 URL 직접 입력" />
+    <label>미디어 (이미지/영상, 최대 20개, 선택)</label>
+    <div id="mediaDropZone" style="border:2px dashed #ccc; border-radius:8px; padding:20px; text-align:center; margin-bottom:8px; cursor:pointer; color:#777; font-size:14px;">
+      클릭해서 파일 선택, 끌어다 놓기, 또는 이미지 붙여넣기(Ctrl+V)
+    </div>
+    <input type="file" id="mediaFileInput" name="mediaFiles" accept="image/*,video/*" multiple style="display:none" />
+    <div id="mediaPreviewList" style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:16px;"></div>
+    <script>
+      (function () {
+        var dt = new DataTransfer();
+        var zone = document.getElementById('mediaDropZone');
+        var input = document.getElementById('mediaFileInput');
+        var preview = document.getElementById('mediaPreviewList');
 
-    <label>이미지 (선택)</label>
-    <input type="file" name="imageFile" accept="image/*" />
-    <input type="url" name="imageUrl" placeholder="또는 URL 직접 입력" />
+        function render() {
+          preview.innerHTML = '';
+          Array.from(dt.files).forEach(function (file, idx) {
+            var item = document.createElement('div');
+            item.style.cssText = 'position:relative; width:80px;';
+            if (file.type.indexOf('image/') === 0) {
+              var img = document.createElement('img');
+              img.src = URL.createObjectURL(file);
+              img.style.cssText = 'width:80px; height:80px; object-fit:cover; border-radius:6px; display:block;';
+              item.appendChild(img);
+            } else {
+              var box = document.createElement('div');
+              box.style.cssText = 'width:80px; height:80px; background:#f0f0f0; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:24px;';
+              box.textContent = '🎬';
+              item.appendChild(box);
+            }
+            var name = document.createElement('div');
+            name.style.cssText = 'font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+            name.textContent = file.name;
+            item.appendChild(name);
+            var removeBtn = document.createElement('button');
+            removeBtn.type = 'button';
+            removeBtn.textContent = '✕';
+            removeBtn.style.cssText = 'position:absolute; top:-6px; right:-6px; width:20px; height:20px; border-radius:50%; border:none; background:#000; color:#fff; cursor:pointer; padding:0; font-size:11px; line-height:1;';
+            removeBtn.onclick = function () {
+              var newDt = new DataTransfer();
+              Array.from(dt.files).forEach(function (f, i) { if (i !== idx) newDt.items.add(f); });
+              dt = newDt;
+              input.files = dt.files;
+              render();
+            };
+            item.appendChild(removeBtn);
+            preview.appendChild(item);
+          });
+        }
+
+        zone.addEventListener('click', function () { input.click(); });
+
+        input.addEventListener('change', function () {
+          Array.from(input.files).forEach(function (f) { dt.items.add(f); });
+          input.files = dt.files;
+          render();
+        });
+
+        zone.addEventListener('dragover', function (e) { e.preventDefault(); zone.style.borderColor = '#000'; });
+        zone.addEventListener('dragleave', function () { zone.style.borderColor = '#ccc'; });
+        zone.addEventListener('drop', function (e) {
+          e.preventDefault();
+          zone.style.borderColor = '#ccc';
+          Array.from(e.dataTransfer.files).forEach(function (f) { dt.items.add(f); });
+          input.files = dt.files;
+          render();
+        });
+
+        document.addEventListener('paste', function (e) {
+          var items = e.clipboardData && e.clipboardData.items;
+          if (!items) return;
+          var added = false;
+          Array.from(items).forEach(function (it) {
+            if (it.type.indexOf('image/') === 0) {
+              var file = it.getAsFile();
+              if (file) {
+                dt.items.add(new File([file], 'pasted-' + Date.now() + '.png', { type: file.type }));
+                added = true;
+              }
+            }
+          });
+          if (added) { input.files = dt.files; render(); }
+        });
+      })();
+    </script>
 
     <label>댓글 (선택)</label>
     <input type="text" name="replyText" placeholder="게시 후 자동으로 달릴 댓글" />

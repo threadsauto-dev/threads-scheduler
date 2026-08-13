@@ -6,8 +6,7 @@ async function publishOne(post, channel) {
   try {
     const { postId, replyId } = await threads.publishPost(channel.threads_user_id, channel.access_token, {
       text: post.text,
-      imageUrl: post.image_url,
-      videoUrl: post.video_url,
+      media: post.media || [],
       replyText: post.reply_text,
     });
     await pool.query(`UPDATE scheduled_posts SET status = 'published', published_post_id = $1 WHERE id = $2`, [

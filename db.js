@@ -34,6 +34,8 @@ async function migrate() {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_scheduled_posts_due ON scheduled_posts (status, scheduled_at);`);
+  // 여러 이미지/영상을 순서대로 담기 위한 배열 컬럼. 옛 image_url/video_url 컬럼은 과거 기록 보존용으로 남겨두고 새 글부터는 안 씀.
+  await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS media JSONB NOT NULL DEFAULT '[]'::jsonb;`);
 }
 
 module.exports = { pool, migrate };

@@ -102,27 +102,39 @@ async function publishContainer(userId, accessToken, creationId) {
   return published.id;
 }
 
-async function buildMainCreationId(userId, accessToken, { text, imageUrl, videoUrl }) {
-  if (imageUrl && videoUrl) {
-    const imageItemId = await createContainer(userId, accessToken, {
-      media_type: 'IMAGE',
-      image_url: imageUrl,
-      is_carousel_item: 'true',
-    });
-    const videoItemId = await createContainer(userId, accessToken, {
-      media_type: 'VIDEO',
-      video_url: videoUrl,
-      is_carousel_item: 'true',
-    });
+// media: [{ type: 'image'|'video', url }, ...] — 순서대로 캐러셀에 들어감. 0개면 텍스트만, 1개면 단일 이미지/영상, 2개 이상이면 캐러셀(최대 20개, Threads API 제한).
+async function buildMainCreationId(userId, accessToken, { text, media = [] }) {
+  if (media.length > 20) throw new Error('한 게시물에는 이미지+영상을 합쳐 최대 20개까지만 넣을 수 있습니다.');
+
+  if (media.length === 0) {
+    return createContainer(userId, accessToken, { media_type: 'TEXT', text });
+  }
+
+  if (media.length === 1) {
+    const item = media[0];
+    const urlField = item.type === 'video' ? 'video_url' : 'image_url';
     return createContainer(userId, accessToken, {
-      media_type: 'CAROUSEL',
-      children: `${imageItemId},${videoItemId}`,
+      media_type: item.type === 'video' ? 'VIDEO' : 'IMAGE',
+      [urlField]: item.url,
       text,
     });
   }
-  if (videoUrl) return createContainer(userId, accessToken, { media_type: 'VIDEO', video_url: videoUrl, text });
-  if (imageUrl) return createContainer(userId, accessToken, { media_type: 'IMAGE', image_url: imageUrl, text });
-  return createContainer(userId, accessToken, { media_type: 'TEXT', text });
+
+  const itemIds = [];
+  for (const item of media) {
+    const urlField = item.type === 'video' ? 'video_url' : 'image_url';
+    const itemId = await createContainer(userId, accessToken, {
+      media_type: item.type === 'video' ? 'VIDEO' : 'IMAGE',
+      [urlField]: item.url,
+      is_carousel_item: 'true',
+    });
+    itemIds.push(itemId);
+  }
+  return createContainer(userId, accessToken, {
+    media_type: 'CAROUSEL',
+    children: itemIds.join(','),
+    text,
+  });
 }
 
 async function publishReply(userId, accessToken, postId, replyText) {
@@ -134,8 +146,8 @@ async function publishReply(userId, accessToken, postId, replyText) {
   return publishContainer(userId, accessToken, replyContainerId);
 }
 
-async function publishPost(userId, accessToken, { text, imageUrl, videoUrl, replyText }) {
-  const creationId = await buildMainCreationId(userId, accessToken, { text, imageUrl, videoUrl });
+async function publishPost(userId, accessToken, { text, media, replyText }) {
+  const creationId = await buildMainCreationId(userId, accessToken, { text, media });
   const postId = await publishContainer(userId, accessToken, creationId);
   const replyId = replyText ? await publishReply(userId, accessToken, postId, replyText) : null;
   return { postId, replyId };

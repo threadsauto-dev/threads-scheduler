@@ -103,12 +103,9 @@ app.get('/compose', requireAdmin, async (req, res) => {
 app.post(
   '/compose',
   requireAdmin,
-  upload.fields([
-    { name: 'videoFile', maxCount: 1 },
-    { name: 'imageFile', maxCount: 1 },
-  ]),
+  upload.fields([{ name: 'mediaFiles', maxCount: 20 }]),
   async (req, res) => {
-    const { channelId, text, imageUrl, videoUrl, replyText, scheduledDate, scheduledHour, scheduledMinute } = req.body;
+    const { channelId, text, replyText, scheduledDate, scheduledHour, scheduledMinute } = req.body;
 
     const { rows: channelRows } = await pool.query('SELECT * FROM channels WHERE id = $1', [channelId]);
     const channel = channelRows[0];
@@ -120,21 +117,27 @@ app.post(
       return res.status(400).send(views.errorPage('과거 시각에는 예약할 수 없습니다.'));
     }
 
-    let finalImageUrl = imageUrl || null;
-    let finalVideoUrl = videoUrl || null;
+    const files = req.files?.mediaFiles || [];
+    if (files.length > 20) {
+      return res.status(400).send(views.errorPage('이미지+영상은 합쳐서 최대 20개까지만 첨부할 수 있습니다.'));
+    }
+
+    let media;
     try {
-      const imageFile = req.files?.imageFile?.[0];
-      if (imageFile) finalImageUrl = await storage.uploadFile(env, imageFile.buffer, imageFile.mimetype);
-      const videoFile = req.files?.videoFile?.[0];
-      if (videoFile) finalVideoUrl = await storage.uploadFile(env, videoFile.buffer, videoFile.mimetype);
+      media = await Promise.all(
+        files.map(async (file) => ({
+          type: file.mimetype.startsWith('video/') ? 'video' : 'image',
+          url: await storage.uploadFile(env, file.buffer, file.mimetype),
+        }))
+      );
     } catch (e) {
       return res.status(500).send(views.errorPage(`미디어 업로드 실패: ${e.message}`));
     }
 
     const { rows: inserted } = await pool.query(
-      `INSERT INTO scheduled_posts (channel_id, text, image_url, video_url, reply_text, scheduled_at)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [channel.id, text, finalImageUrl, finalVideoUrl, replyText || null, scheduledAt]
+      `INSERT INTO scheduled_posts (channel_id, text, media, reply_text, scheduled_at)
+     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [channel.id, text, JSON.stringify(media), replyText || null, scheduledAt]
     );
     const post = inserted[0];
 
