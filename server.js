@@ -137,11 +137,14 @@ app.get('/auth/callback', async (req, res) => {
     }
     const { accessToken, threadsUserId, username, expiresIn } = await loginPromise;
     // 예전에 연결 해제했던 계정을 다시 연결하는 경우도 있으니 disconnected_at을 같이 지운다.
+    // reconnect_reason도 같이 지운다 — 재연결은 곧 새 스코프 동의를 다시 받는 것이므로,
+    // 예전에 권한 부족으로 남았던 경고는 더 이상 유효하지 않다.
     await pool.query(
       `INSERT INTO channels (threads_user_id, username, access_token, token_expires_at)
        VALUES ($1, $2, $3, now() + ($4 || ' seconds')::interval)
        ON CONFLICT (threads_user_id) DO UPDATE
-         SET username = $2, access_token = $3, token_expires_at = now() + ($4 || ' seconds')::interval, disconnected_at = NULL`,
+         SET username = $2, access_token = $3, token_expires_at = now() + ($4 || ' seconds')::interval,
+             disconnected_at = NULL, reconnect_reason = NULL`,
       [threadsUserId, username, accessToken, expiresIn]
     );
     res.redirect('/channels');

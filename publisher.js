@@ -11,6 +11,22 @@ function isRetryableError(err) {
   return !/^\[.+\] \{/.test(err.message || '');
 }
 
+// Meta 에러 code 10 = 권한 부족("Application does not have permission for this action").
+// 이건 이 게시물 하나만의 문제가 아니라 그 채널 토큰에 특정 스코프가 통째로 없다는
+// 신호라, 재시도해도 절대 성공하지 않는다 — 채널 재연결이 필요하다는 걸 바로 알 수 있게
+// /channels 화면에 눈에 띄게 남긴다. (OAuth 스코프 누락으로 댓글이 조용히 계속 실패했던
+// 사고를 겪고 2026-08-14에 추가 — 다시는 /posts 한 줄에 묻혀서 뒤늦게 발견되지 않도록.)
+function isPermissionError(err) {
+  return /"code":\s*10\b/.test(err.message || '');
+}
+
+async function flagChannelForReconnect(channelId, message) {
+  await pool.query(
+    `UPDATE channels SET reconnect_reason = $1 WHERE id = $2`,
+    [`권한 부족으로 실패 — 채널을 재연결해주세요: ${message}`, channelId]
+  );
+}
+
 // scheduled_posts 한 건의 "본문"을 실제로 발행하고 상태를 갱신한다.
 // server.js(즉시 발행)와 worker.js(예약 발행) 둘 다 이 함수를 공유한다.
 // 댓글(쿠팡 링크)은 여기서 같이 처리하지 않는다 — publishCommentOne()이 별도 스케줄로 처리한다.
@@ -39,6 +55,7 @@ async function publishOne(post, channel) {
     return { postId };
   } catch (e) {
     const retryCount = (post.retry_count || 0) + 1;
+    if (isPermissionError(e)) await flagChannelForReconnect(channel.id, e.message);
 
     if (e.isPublishCall) {
       // 본문을 실제로 게시하는 호출 자체가 실패 — 응답을 못 받았어도 요청은 이미
@@ -94,6 +111,7 @@ async function publishCommentOne(post, channel) {
       [replyId, post.id]
     );
   } catch (e) {
+    if (isPermissionError(e)) await flagChannelForReconnect(channel.id, e.message);
     const retryCount = (post.comment_retry_count || 0) + 1;
     if (isRetryableError(e) && retryCount <= COMMENT_BACKOFF_MINUTES.length) {
       // 원인이 애매한 실패(네트워크 순간 끊김, 전파 지연 등) — 다음 확인 전에 이미

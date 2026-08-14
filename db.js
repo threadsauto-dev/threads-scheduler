@@ -77,6 +77,12 @@ async function migrate() {
     );
   `);
   await pool.query(`INSERT INTO worker_heartbeats (id) VALUES (1) ON CONFLICT (id) DO NOTHING;`);
+  // Threads가 "권한 없음"(code 10 등)으로 거부하면 그 게시물 하나만의 문제가 아니라 그
+  // 채널의 토큰에 특정 스코프가 아예 없다는 신호다 — /posts의 게시물 하나에 묻혀서
+  // 나중에야 발견되는 일이 없도록, 이 경우엔 채널 자체에 눈에 띄는 경고를 남긴다.
+  // (재발 방지: OAuth 스코프 누락 때문에 star_jakeun 채널 댓글이 조용히 계속 실패했던
+  // 사고를 겪고 2026-08-14에 추가.)
+  await pool.query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS reconnect_reason TEXT;`);
 }
 
 module.exports = { pool, migrate };

@@ -122,7 +122,12 @@ const channelsList = (channels) => layout('채널', `
                <button type="submit" class="cancel-btn">연결 해제</button>
              </form>`
       }</td>
-    </tr>`
+    </tr>
+    ${
+      c.reconnect_reason
+        ? `<tr><td colspan="4" style="font-size:13px; color:#c00; padding-top:0;">⚠ ${escapeHtml(c.reconnect_reason)}</td></tr>`
+        : ''
+    }`
         )
         .join('') || '<tr><td colspan="4">연결된 채널이 없습니다.</td></tr>'
     }
