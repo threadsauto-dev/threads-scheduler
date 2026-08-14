@@ -1,4 +1,29 @@
+const crypto = require('crypto');
+
 const API = 'https://graph.threads.net/v1.0';
+
+function base64UrlDecode(str) {
+  const padded = str.replace(/-/g, '+').replace(/_/g, '/');
+  return Buffer.from(padded, 'base64');
+}
+
+// Meta의 deauthorize/data-deletion 콜백이 보내는 signed_request
+// ("<서명>.<base64url JSON payload>")를 검증하고 디코드한다. 서명 확인 없이 payload를
+// 믿으면 누구든 아무 user_id나 넣어 요청을 위조해 남의 채널을 지울 수 있으므로 필수.
+function parseSignedRequest(env, signedRequest) {
+  const [encodedSig, encodedPayload] = String(signedRequest || '').split('.');
+  if (!encodedSig || !encodedPayload) throw new Error('signed_request 형식이 올바르지 않습니다.');
+
+  const sig = base64UrlDecode(encodedSig);
+  const expectedSig = crypto.createHmac('sha256', env.APP_SECRET).update(encodedPayload).digest();
+  if (sig.length !== expectedSig.length || !crypto.timingSafeEqual(sig, expectedSig)) {
+    throw new Error('signed_request 서명이 유효하지 않습니다.');
+  }
+
+  const payload = JSON.parse(base64UrlDecode(encodedPayload).toString('utf8'));
+  if (payload.algorithm !== 'HMAC-SHA256') throw new Error(`지원하지 않는 서명 알고리즘: ${payload.algorithm}`);
+  return payload;
+}
 
 async function call(path, params, method = 'GET') {
   const url = new URL(`${API}${path}`);
@@ -190,4 +215,5 @@ module.exports = {
   publishReply,
   publishPost,
   hasOwnReply,
+  parseSignedRequest,
 };

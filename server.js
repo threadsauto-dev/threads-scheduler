@@ -257,11 +257,45 @@ app.get('/posts', requireAdmin, async (req, res) => {
 app.get('/privacy', (req, res) => res.send(views.privacy()));
 app.get('/terms', (req, res) => res.send(views.terms()));
 
-// Meta가 사용자의 앱 연결 해제/삭제 요청 시 호출하는 콜백.
-app.post('/auth/deauthorize', (req, res) => res.sendStatus(200));
+// Meta가 사용자가 Threads 계정 설정에서 이 앱의 권한을 해제했을 때 호출하는 콜백.
+// (우리 자체 "/channels/:id/disconnect"와 성격이 다름 — 이건 상대가 Meta 쪽에서 직접
+// 끊은 경우라, 우리 쪽에도 반영해서 access_token으로 계속 호출을 시도하지 않게 한다.)
+// user_id가 실제로 우리 channels.threads_user_id와 정확히 같은 값인지는 Meta 문서에서
+// 명시적으로 확인하지 못해 100% 확신은 없다 — 실패해도 절대 죽지 않고 로그만 남긴다.
+app.post('/auth/deauthorize', async (req, res) => {
+  try {
+    const payload = threads.parseSignedRequest(env, req.body.signed_request);
+    const { rowCount } = await pool.query(
+      `UPDATE channels SET access_token = '', token_expires_at = now(), disconnected_at = now()
+       WHERE threads_user_id = $1 AND disconnected_at IS NULL`,
+      [payload.user_id]
+    );
+    await pool.query(
+      `UPDATE scheduled_posts SET status = 'canceled', terminal_at = now()
+       WHERE status = 'pending' AND channel_id IN (SELECT id FROM channels WHERE threads_user_id = $1)`,
+      [payload.user_id]
+    );
+    console.log(`[Meta 연결 해제 알림] user_id=${payload.user_id} 매칭된 채널 ${rowCount}개`);
+  } catch (e) {
+    console.error('[Meta 연결 해제 알림] 처리 실패:', e.message);
+  }
+  res.sendStatus(200);
+});
 
-app.post('/auth/delete', (req, res) => {
-  const confirmationCode = `del_${Date.now()}`;
+// Meta의 데이터 삭제 요청 콜백 — 단순 연결 해제와 달리 "이 사람에 대해 저장한 모든 것을
+// 지워달라"는 요청이므로, 토큰만 비우는 게 아니라 채널 행 자체를 지운다
+// (ON DELETE CASCADE로 그 채널의 예약/발행 내역도 함께 삭제됨).
+app.post('/auth/delete', async (req, res) => {
+  let matchedUserId = null;
+  try {
+    const payload = threads.parseSignedRequest(env, req.body.signed_request);
+    matchedUserId = payload.user_id;
+    const { rowCount } = await pool.query(`DELETE FROM channels WHERE threads_user_id = $1`, [payload.user_id]);
+    console.log(`[Meta 데이터 삭제 요청] user_id=${matchedUserId} 채널 ${rowCount}개 삭제`);
+  } catch (e) {
+    console.error('[Meta 데이터 삭제 요청] 처리 실패:', e.message);
+  }
+  const confirmationCode = `del_${matchedUserId || 'unknown'}_${Date.now()}`;
   res.json({
     url: `${req.protocol}://${req.get('host')}/auth/delete/status?id=${confirmationCode}`,
     confirmation_code: confirmationCode,
