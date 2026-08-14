@@ -54,7 +54,11 @@ function safeCompare(a, b) {
   return crypto.timingSafeEqual(hashA, hashB);
 }
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 30 * 1024 * 1024 } });
+// Threads는 영상을 1GB(권장 500MB 이하)까지 허용하는데 기존 30MB는 실제 영상엔 너무
+// 빡빡했다. 다만 multer가 파일을 서버 메모리에 통째로 올렸다가 R2로 보내는 방식이라
+// (memoryStorage), 1GB 근처까지 올리면 여러 개를 한꺼번에 첨부할 때 메모리 부족으로
+// 서버가 죽을 수 있다 — Threads 한도와 이 서버의 메모리 여유 사이에서 절충한 값.
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
 
 // datetime-local 입력값("YYYY-MM-DDTHH:mm")은 시간대 정보가 없다 — 이 앱은 한국 사용자 전용이므로 KST(+09:00)로 해석한다.
 function parseKstDatetimeLocal(value) {
@@ -367,7 +371,7 @@ app.get('/auth/delete/status', (req, res) => {
 app.use((err, req, res, next) => {
   console.error('처리되지 않은 요청 오류:', err);
   if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
-    return res.status(400).send(views.errorPage('파일 하나의 용량이 너무 큽니다 (최대 30MB).'));
+    return res.status(400).send(views.errorPage('파일 하나의 용량이 너무 큽니다 (최대 100MB).'));
   }
   res.status(500).send(views.errorPage('예상치 못한 오류가 발생했습니다. 문제가 계속되면 문의해주세요.'));
 });

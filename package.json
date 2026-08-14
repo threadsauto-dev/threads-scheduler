@@ -1,5 +1,5 @@
 {
-  "name": "threads-scheduler-demo",
+  "name": "threads-scheduler",
   "version": "1.0.0",
   "private": true,
   "engines": { "node": ">=18" },
