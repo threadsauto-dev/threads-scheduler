@@ -6,6 +6,23 @@ const formatKst = (date) => new Date(date).toLocaleString('ko-KR', { timeZone: '
 const escapeHtml = (str) =>
   String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// 상태값(DB 컬럼 그대로)을 발행 내역 화면에 보여줄 한글 라벨로.
+const STATUS_LABELS = {
+  pending: 'pending',
+  processing: 'processing',
+  published: 'published',
+  failed: 'failed',
+  canceled: 'canceled',
+};
+
+// 댓글(쿠팡 링크) 상태 — 본문 상태(status)와 별개로 관리된다.
+const COMMENT_LABELS = {
+  pending: '대기중',
+  processing: '처리중',
+  posted: '댓글 완료',
+  needs_review: '확인 필요',
+};
+
 // 예약 수정 폼에 날짜/시/분 select를 KST 기준으로 미리 채우기 위한 분해.
 function kstDateInputParts(date) {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -44,6 +61,10 @@ const layout = (title, body) => `<!doctype html>
   .badge-published { background: #d4edda; }
   .badge-failed { background: #f8d7da; }
   .badge-canceled { background: #e2e3e5; color: #555; }
+  .badge-comment-pending { background: #fff3cd; }
+  .badge-comment-processing { background: #fff3cd; }
+  .badge-comment-posted { background: #d4edda; }
+  .badge-comment-needs_review { background: #f8d7da; }
   .cancel-btn { background: #fff; color: #c00; border: 1px solid #f1b0b0; padding: 4px 10px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }
   footer { margin-top: 40px; font-size: 13px; color: #888; }
   footer a { color: #888; }
@@ -396,20 +417,26 @@ const postsHistory = (posts) => layout('발행 내역', `
   ${nav()}
   <h1>발행 내역</h1>
   <table>
-    <tr><th>채널</th><th>본문</th><th>예정 시각</th><th>상태</th><th>관리</th></tr>
+    <tr><th>채널</th><th>본문</th><th>예정 시각</th><th>상태</th><th>댓글</th><th>관리</th></tr>
     ${
       posts
-        .map(
-          (p) => `<tr>
+        .map((p) => {
+          const commentCell = !p.reply_text
+            ? '-'
+            : `<span class="badge badge-comment-${p.comment_status || 'pending'}" ${
+                p.comment_error_message ? `title="${escapeHtml(p.comment_error_message)}"` : ''
+              }>${COMMENT_LABELS[p.comment_status] || '-'}</span>`;
+          return `<tr>
         <td>@${p.username}</td>
         <td>${(p.text || '').slice(0, 30)}</td>
         <td>${formatKst(p.scheduled_at)}</td>
-        <td><span class="badge badge-${p.status}" ${p.status === 'failed' && p.error_message ? `title="${escapeHtml(p.error_message)}"` : ''}>${p.status}</span></td>
+        <td><span class="badge badge-${p.status}" ${p.error_message ? `title="${escapeHtml(p.error_message)}"` : ''}>${STATUS_LABELS[p.status] || p.status}</span></td>
+        <td>${commentCell}</td>
         <td>${p.status === 'pending' ? pendingActions(p, '/posts') : ''}</td>
       </tr>
-      ${p.status === 'failed' && p.error_message ? `<tr><td colspan="5" style="font-size:12px; color:#c00; padding-top:0;">${escapeHtml(p.error_message)}</td></tr>` : ''}`
-        )
-        .join('') || '<tr><td colspan="5">기록이 없습니다.</td></tr>'
+      ${p.error_message ? `<tr><td colspan="6" style="font-size:12px; color:#c00; padding-top:0;">${escapeHtml(p.error_message)}</td></tr>` : ''}`;
+        })
+        .join('') || '<tr><td colspan="6">기록이 없습니다.</td></tr>'
     }
   </table>
 `);

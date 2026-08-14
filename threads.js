@@ -7,7 +7,15 @@ async function call(path, params, method = 'GET') {
     method,
     ...(method === 'POST' ? { body: new URLSearchParams(params) } : {}),
   });
-  const json = await res.json();
+  const text = await res.text();
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    // 빈 응답, 게이트웨이 타임아웃 HTML 등 — 요청이 서버에 실제로 반영됐는지 알 수 없는
+    // 애매한 상태다. "Unexpected end of JSON input" 같은 정체불명 에러 대신 원인을 남긴다.
+    throw new Error(`[${path}] 응답을 해석할 수 없음 (HTTP ${res.status}): ${text.slice(0, 200)}`);
+  }
   if (!res.ok) throw new Error(`[${path}] ${JSON.stringify(json)}`);
   return json;
 }
@@ -94,12 +102,19 @@ async function createContainer(userId, accessToken, params) {
 }
 
 async function publishContainer(userId, accessToken, creationId) {
-  const published = await call(
-    `/${userId}/threads_publish`,
-    { creation_id: creationId, access_token: accessToken },
-    'POST'
-  );
-  return published.id;
+  try {
+    const published = await call(
+      `/${userId}/threads_publish`,
+      { creation_id: creationId, access_token: accessToken },
+      'POST'
+    );
+    return published.id;
+  } catch (e) {
+    // 실제로 콘텐츠를 라이브로 올리는 호출이다. 응답을 못 받아도 요청은 이미 Threads
+    // 서버에 반영됐을 수 있어, 이 표시가 있으면 호출부는 절대 자동 재시도하면 안 된다.
+    e.isPublishCall = true;
+    throw e;
+  }
 }
 
 // media: [{ type: 'image'|'video', url }, ...] — 순서대로 캐러셀에 들어감. 0개면 텍스트만, 1개면 단일 이미지/영상, 2개 이상이면 캐러셀(최대 20개, Threads API 제한).
@@ -120,16 +135,19 @@ async function buildMainCreationId(userId, accessToken, { text, media = [] }) {
     });
   }
 
-  const itemIds = [];
-  for (const item of media) {
-    const urlField = item.type === 'video' ? 'video_url' : 'image_url';
-    const itemId = await createContainer(userId, accessToken, {
-      media_type: item.type === 'video' ? 'VIDEO' : 'IMAGE',
-      [urlField]: item.url,
-      is_carousel_item: 'true',
-    });
-    itemIds.push(itemId);
-  }
+  // 자식 컨테이너를 순차로 만들면(특히 영상이 여러 개일 때) 처리 대기가 누적되어
+  // 먼저 만든 항목이 마지막 캐러셀 조립 전에 만료("Invalid Carousel Children")될 수 있다.
+  // 병렬로 만들어 전체 대기 시간을 줄인다. Promise.all은 media 순서를 그대로 보존한다.
+  const itemIds = await Promise.all(
+    media.map((item) => {
+      const urlField = item.type === 'video' ? 'video_url' : 'image_url';
+      return createContainer(userId, accessToken, {
+        media_type: item.type === 'video' ? 'VIDEO' : 'IMAGE',
+        [urlField]: item.url,
+        is_carousel_item: 'true',
+      });
+    })
+  );
   return createContainer(userId, accessToken, {
     media_type: 'CAROUSEL',
     children: itemIds.join(','),
@@ -146,11 +164,21 @@ async function publishReply(userId, accessToken, postId, replyText) {
   return publishContainer(userId, accessToken, replyContainerId);
 }
 
-async function publishPost(userId, accessToken, { text, media, replyText }) {
+// 본문만 발행한다. 댓글(쿠팡 링크)은 publisher.js가 별도 스케줄(발행 후 5분 뒤부터)로
+// publishReply()를 호출해 처리한다 — 같은 호출 안에서 이어서 시도하지 않는 이유는
+// 발행 직후 바로 그 postId를 reply_to_id로 참조하면 Threads 백엔드 전파가 아직 안 끝나
+// 원인불명 에러로 실패하는 경우가 있다고 알려져 있어서다(영상이 있으면 더 그런 경향).
+async function publishPost(userId, accessToken, { text, media }) {
   const creationId = await buildMainCreationId(userId, accessToken, { text, media });
-  const postId = await publishContainer(userId, accessToken, creationId);
-  const replyId = replyText ? await publishReply(userId, accessToken, postId, replyText) : null;
-  return { postId, replyId };
+  return publishContainer(userId, accessToken, creationId);
+}
+
+// 해당 게시물에 우리 계정이 단 답글 중 text가 정확히 일치하는 게 이미 있는지 확인한다.
+// 댓글 발행 응답이 유실됐을 때(=isPublishCall 에러) 재시도 전에 먼저 이걸로 확인해서,
+// 실제로는 이미 달려 있는데 또 하나 더 달아버리는 중복을 막는다.
+async function hasOwnReply(postId, accessToken, replyText) {
+  const json = await call(`/${postId}/replies`, { fields: 'text,is_reply_owned_by_me', access_token: accessToken });
+  return (json.data || []).some((r) => r.is_reply_owned_by_me && r.text === replyText);
 }
 
 module.exports = {
@@ -161,4 +189,5 @@ module.exports = {
   publishContainer,
   publishReply,
   publishPost,
+  hasOwnReply,
 };

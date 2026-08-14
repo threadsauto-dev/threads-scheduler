@@ -40,24 +40,55 @@ async function run() {
 
   if (duePosts.length === 0) {
     console.log('발행할 예약 게시물 없음');
+  } else {
+    for (const post of duePosts) {
+      const { rows: channelRows } = await pool.query('SELECT * FROM channels WHERE id = $1', [post.channel_id]);
+      const channel = channelRows[0];
+      if (!channel) {
+        await pool.query(
+          `UPDATE scheduled_posts SET status = 'failed', error_message = '채널을 찾을 수 없음' WHERE id = $1`,
+          [post.id]
+        );
+        continue;
+      }
+      try {
+        const { postId } = await publisher.publishOne(post, channel);
+        console.log(`[발행 완료] @${channel.username} post #${post.id} -> ${postId}`);
+      } catch (e) {
+        console.error(`[발행 실패] @${channel.username} post #${post.id}: ${e.message}`);
+      }
+    }
+  }
+
+  // 댓글(쿠팡 링크)은 본문과 별도 스케줄로 처리한다 — comment_due_at이 지난 것만 골라온다.
+  const { rows: dueComments } = await pool.query(`
+    UPDATE scheduled_posts SET comment_status = 'processing'
+    WHERE id IN (
+      SELECT id FROM scheduled_posts
+      WHERE comment_status = 'pending' AND comment_due_at <= now()
+      ORDER BY comment_due_at
+      LIMIT 20
+    )
+    RETURNING *
+  `);
+
+  if (dueComments.length === 0) {
+    console.log('처리할 댓글 없음');
     return;
   }
 
-  for (const post of duePosts) {
+  for (const post of dueComments) {
     const { rows: channelRows } = await pool.query('SELECT * FROM channels WHERE id = $1', [post.channel_id]);
     const channel = channelRows[0];
     if (!channel) {
-      await pool.query(`UPDATE scheduled_posts SET status = 'failed', error_message = '채널을 찾을 수 없음' WHERE id = $1`, [
-        post.id,
-      ]);
+      await pool.query(
+        `UPDATE scheduled_posts SET comment_status = 'needs_review', comment_error_message = '채널을 찾을 수 없음' WHERE id = $1`,
+        [post.id]
+      );
       continue;
     }
-    try {
-      const { postId } = await publisher.publishOne(post, channel);
-      console.log(`[발행 완료] @${channel.username} post #${post.id} -> ${postId}`);
-    } catch (e) {
-      console.error(`[발행 실패] @${channel.username} post #${post.id}: ${e.message}`);
-    }
+    await publisher.publishCommentOne(post, channel);
+    console.log(`[댓글 처리] @${channel.username} post #${post.id}`);
   }
 }
 

@@ -38,6 +38,17 @@ async function migrate() {
   await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS media JSONB NOT NULL DEFAULT '[]'::jsonb;`);
   // 네트워크 순간 끊김처럼 일시적으로 보이는 발행 실패를 몇 번 자동 재시도하기 위한 카운터.
   await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0;`);
+  // 댓글(쿠팡 링크)은 본문과 별도로 스케줄된다 — 본문 발행 후 comment_due_at이 지나면
+  // worker.js가 집어가 시도하고, 실패하면 comment_retry_count를 늘리며 다음 시도 시각을 뒤로 미룬다.
+  // reply_text가 없는 글이나 아직 본문이 발행 전인 글은 comment_status가 NULL이다.
+  await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS comment_status TEXT;`);
+  await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS comment_due_at TIMESTAMPTZ;`);
+  await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS comment_retry_count INTEGER NOT NULL DEFAULT 0;`);
+  await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS comment_error_message TEXT;`);
+  await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS comment_id TEXT;`);
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_scheduled_posts_comment_due ON scheduled_posts (comment_status, comment_due_at);`
+  );
 }
 
 module.exports = { pool, migrate };
