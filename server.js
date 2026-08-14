@@ -300,7 +300,10 @@ app.get('/posts', requireAdmin, async (req, res) => {
      JOIN channels c ON c.id = sp.channel_id
      ORDER BY sp.scheduled_at DESC LIMIT 100`
   );
-  res.send(views.postsHistory(rows));
+  const { rows: heartbeatRows } = await pool.query(
+    'SELECT last_run_at, last_error FROM worker_heartbeats WHERE id = 1'
+  );
+  res.send(views.postsHistory(rows, heartbeatRows[0]));
 });
 
 app.get('/privacy', (req, res) => res.send(views.privacy()));

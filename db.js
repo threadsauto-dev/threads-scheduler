@@ -66,6 +66,17 @@ async function migrate() {
     `UPDATE scheduled_posts SET terminal_at = scheduled_at
      WHERE status IN ('published', 'failed', 'canceled') AND terminal_at IS NULL;`
   );
+  // 단일 행짜리 상태 테이블 — worker.js가 매 실행(정상이면 1분마다)마다 이 행을 갱신해서,
+  // 크론이 조용히 멈췄을 때 화면에서 알 수 있게 한다(그 전까진 아무 표시도 없었음).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS worker_heartbeats (
+      id INTEGER PRIMARY KEY,
+      last_run_at TIMESTAMPTZ,
+      last_error TEXT,
+      CHECK (id = 1)
+    );
+  `);
+  await pool.query(`INSERT INTO worker_heartbeats (id) VALUES (1) ON CONFLICT (id) DO NOTHING;`);
 }
 
 module.exports = { pool, migrate };

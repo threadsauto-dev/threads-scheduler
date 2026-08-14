@@ -126,9 +126,28 @@ async function run() {
   await cleanupOldMedia();
 }
 
-run()
-  .then(() => pool.end())
-  .catch((e) => {
+// 이 실행이 성공했는지/언제였는지를 남긴다 — 화면(발행 내역)에서 크론이 죽었는지
+// 확인할 수 있는 유일한 근거라, run() 자체가 실패한 경우(DB 접속 실패 등만 예외)도 기록한다.
+async function recordHeartbeat(error) {
+  try {
+    await pool.query(`UPDATE worker_heartbeats SET last_run_at = now(), last_error = $1 WHERE id = 1`, [
+      error ? error.message : null,
+    ]);
+  } catch (e) {
+    console.error('하트비트 기록 실패:', e.message);
+  }
+}
+
+(async () => {
+  let failed = false;
+  try {
+    await run();
+    await recordHeartbeat(null);
+  } catch (e) {
+    failed = true;
     console.error('worker 실행 실패:', e.message);
-    process.exit(1);
-  });
+    await recordHeartbeat(e);
+  }
+  await pool.end();
+  if (failed) process.exit(1);
+})();

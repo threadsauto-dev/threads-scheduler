@@ -432,9 +432,27 @@ const composeForm = (channels, message, upcomingPending = [], selectedChannelId,
   ${upcomingList(upcomingPending)}
 `);
 
-const postsHistory = (posts) => layout('발행 내역', `
+// 워커(Render Cron)가 죽었을 때 화면에서 알 수 있는 유일한 단서 — 정상이면 1분마다
+// worker.js가 이 값을 갱신하므로, 너무 오래됐으면 크론이 멈췄다는 뜻이다.
+const WORKER_STALE_MINUTES = 5;
+const workerStatusBanner = (heartbeat) => {
+  if (!heartbeat || !heartbeat.last_run_at) {
+    return `<p style="background:#fff3cd;padding:10px 12px;border-radius:8px;font-size:13px;">⚠ 발행 엔진이 아직 한 번도 실행된 기록이 없습니다. 크론 작업 설정을 확인해주세요.</p>`;
+  }
+  const minutesAgo = Math.max(0, Math.round((Date.now() - new Date(heartbeat.last_run_at).getTime()) / 60000));
+  const stale = minutesAgo > WORKER_STALE_MINUTES;
+  const timeText = minutesAgo === 0 ? '방금 전' : `${minutesAgo}분 전`;
+  return `<p style="background:${stale ? '#f8d7da' : '#eef4ff'};padding:10px 12px;border-radius:8px;font-size:13px;">
+    ${stale ? '⚠' : '✓'} 발행 엔진 마지막 실행: ${timeText}${
+    stale ? ' — 평소엔 1분마다 실행돼야 하는데 너무 오래됐습니다. 크론 작업이 멈췄을 수 있어요.' : ''
+  }${heartbeat.last_error ? `<br/><span style="color:#c00;">최근 오류: ${escapeHtml(heartbeat.last_error)}</span>` : ''}
+  </p>`;
+};
+
+const postsHistory = (posts, heartbeat) => layout('발행 내역', `
   ${nav()}
   <h1>발행 내역</h1>
+  ${workerStatusBanner(heartbeat)}
   <table>
     <tr><th>채널</th><th>본문</th><th>예정 시각</th><th>상태</th><th>댓글</th><th>관리</th></tr>
     ${
