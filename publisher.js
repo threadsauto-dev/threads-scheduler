@@ -59,12 +59,10 @@ async function publishOne(post, channel) {
   }
 }
 
-// 댓글은 중복돼도 채널 정지 같은 큰 사고로 이어지지 않으므로(본문과 달리) 훨씬 끈질기게
-// 재시도한다 — 처음 몇 번은 짧은 간격, 그 뒤로는 1시간 간격으로 사실상 "될 때까지" 시도.
+// 댓글은 중복돼도 채널 정지 같은 큰 사고로 이어지지 않으므로(본문과 달리) 본문보다 훨씬
+// 끈질기게 재시도한다 — 5분, 15분, 30분, 1시간 간격으로 총 4번. 그래도 계속 애매하게
+// 실패하면 더 기다려봐야 소용없을 가능성이 높다고 보고 'needs_review'로 넘겨 사람이 보게 한다.
 const COMMENT_BACKOFF_MINUTES = [5, 15, 30, 60];
-function nextCommentDelayMinutes(retryCount) {
-  return COMMENT_BACKOFF_MINUTES[Math.min(retryCount, COMMENT_BACKOFF_MINUTES.length - 1)];
-}
 
 // scheduled_posts 한 건의 "댓글"(쿠팡 링크)을 시도한다. worker.js가 comment_due_at이
 // 지난 건들을 골라 이 함수를 호출한다.
@@ -92,11 +90,11 @@ async function publishCommentOne(post, channel) {
       [replyId, post.id]
     );
   } catch (e) {
-    if (isRetryableError(e)) {
+    const retryCount = (post.comment_retry_count || 0) + 1;
+    if (isRetryableError(e) && retryCount <= COMMENT_BACKOFF_MINUTES.length) {
       // 원인이 애매한 실패(네트워크 순간 끊김, 전파 지연 등) — 다음 확인 전에 이미
       // 성공해 있을 수도 있으니 위의 hasOwnReply 확인이 다음 시도 때 다시 걸러준다.
-      const retryCount = (post.comment_retry_count || 0) + 1;
-      const delayMin = nextCommentDelayMinutes(retryCount - 1);
+      const delayMin = COMMENT_BACKOFF_MINUTES[retryCount - 1];
       await pool.query(
         `UPDATE scheduled_posts SET comment_status = 'pending',
          comment_due_at = now() + ($1 || ' minutes')::interval, comment_retry_count = $2, comment_error_message = $3
@@ -104,11 +102,12 @@ async function publishCommentOne(post, channel) {
         [delayMin, retryCount, e.message, post.id]
       );
     } else {
-      // Threads가 내용 자체를 명확히 거부한 경우 — 재시도로는 해결되지 않으니
-      // 사람이 Threads API 오류 원문을 보고 직접 판단(링크 수정, 수동 댓글 등)해야 한다.
+      // Threads가 내용 자체를 명확히 거부했거나(재시도로 해결 안 됨), 애매한 실패였지만
+      // 5분→15분→30분→1시간 재시도를 다 썼는데도 계속 실패한 경우 — 사람이 Threads API
+      // 오류 원문을 보고 직접 판단(링크 수정, 수동 댓글 등)해야 한다.
       await pool.query(
-        `UPDATE scheduled_posts SET comment_status = 'needs_review', comment_error_message = $1 WHERE id = $2`,
-        [e.message, post.id]
+        `UPDATE scheduled_posts SET comment_status = 'needs_review', comment_retry_count = $1, comment_error_message = $2 WHERE id = $3`,
+        [retryCount, e.message, post.id]
       );
     }
   }
