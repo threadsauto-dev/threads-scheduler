@@ -54,7 +54,11 @@ function buildAuthorizeUrl(env) {
   // threads_read_replies: hasOwnReply()가 재시도 전 기존 댓글 목록을 확인하는 데 필요.
   // threads_manage_replies: 댓글(답글) 발행/관리에 필요 — content_publish만으론 부족했다
   // (실제로 star_jakeun 채널에서 "Application does not have permission" 에러로 확인됨).
-  url.searchParams.set('scope', 'threads_basic,threads_content_publish,threads_read_replies,threads_manage_replies');
+  // threads_manage_insights: 게시물 조회수(getPostViews)를 가져오는 데 필요.
+  url.searchParams.set(
+    'scope',
+    'threads_basic,threads_content_publish,threads_read_replies,threads_manage_replies,threads_manage_insights'
+  );
   url.searchParams.set('response_type', 'code');
   return url.toString();
 }
@@ -209,6 +213,15 @@ async function hasOwnReply(postId, accessToken, replyText) {
   return (json.data || []).some((r) => r.is_reply_owned_by_me && r.text === replyText);
 }
 
+// 게시물 하나의 누적 조회수. 응답 형태: { data: [{ name: 'views', values: [{ value: N }] }] }
+// (Meta 공식 문서로 확인한 형식 — total_value 객체가 아니라 values 배열이다).
+async function getPostViews(postId, accessToken) {
+  const json = await call(`/${postId}/insights`, { metric: 'views', access_token: accessToken });
+  const entry = (json.data || []).find((d) => d.name === 'views');
+  const value = entry && entry.values && entry.values[0] && entry.values[0].value;
+  return typeof value === 'number' ? value : null;
+}
+
 module.exports = {
   buildAuthorizeUrl,
   loginWithCode,
@@ -219,4 +232,5 @@ module.exports = {
   publishPost,
   hasOwnReply,
   parseSignedRequest,
+  getPostViews,
 };

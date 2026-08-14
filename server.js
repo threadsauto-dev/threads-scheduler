@@ -313,6 +313,70 @@ app.get('/posts', requireAdmin, async (req, res) => {
   res.send(views.postsHistory(rows, heartbeatRows[0]));
 });
 
+app.get('/report', requireAdmin, async (req, res) => {
+  // 시간(KST) × 상태별로 묶어서 가져온 뒤 채널별로 합산한다 — 하루 24시간 × 채널 몇 개 ×
+  // 상태 몇 가지라 행 수가 적어서 집계는 JS에서 하는 게 SQL보다 이해하기 쉽다.
+  const { rows } = await pool.query(`
+    SELECT c.id AS channel_id, c.username,
+      EXTRACT(HOUR FROM (sp.scheduled_at AT TIME ZONE 'Asia/Seoul'))::int AS hour,
+      sp.status,
+      count(*)::int AS cnt,
+      COALESCE(sum(sp.views), 0)::int AS views_sum,
+      count(*) FILTER (WHERE sp.views IS NOT NULL)::int AS views_confirmed_cnt
+    FROM scheduled_posts sp
+    JOIN channels c ON c.id = sp.channel_id
+    WHERE (sp.scheduled_at AT TIME ZONE 'Asia/Seoul')::date = (now() AT TIME ZONE 'Asia/Seoul')::date
+      AND c.disconnected_at IS NULL
+    GROUP BY c.id, c.username, hour, sp.status
+    ORDER BY c.id, hour
+  `);
+
+  const channelsById = new Map();
+  for (const row of rows) {
+    let ch = channelsById.get(row.channel_id);
+    if (!ch) {
+      ch = {
+        username: row.username,
+        publishedCount: 0,
+        pendingCount: 0,
+        totalViews: 0,
+        viewsConfirmed: 0,
+        hours: Array.from({ length: 24 }, () => ({ count: 0, hasPending: false, hasPublished: false, hasFailed: false })),
+      };
+      channelsById.set(row.channel_id, ch);
+    }
+    const hourCell = ch.hours[row.hour];
+    hourCell.count += row.cnt;
+    if (row.status === 'pending' || row.status === 'processing') {
+      hourCell.hasPending = true;
+      ch.pendingCount += row.cnt;
+    } else if (row.status === 'published') {
+      hourCell.hasPublished = true;
+      ch.publishedCount += row.cnt;
+      ch.totalViews += row.views_sum;
+      ch.viewsConfirmed += row.views_confirmed_cnt;
+    } else {
+      hourCell.hasFailed = true;
+    }
+  }
+  // 연결된 채널이지만 오늘 게시물이 하나도 없는 곳도 빈 카드로 보여준다.
+  const { rows: allChannels } = await pool.query(
+    'SELECT id, username FROM channels WHERE disconnected_at IS NULL ORDER BY created_at'
+  );
+  const channels = allChannels.map((c) => ({
+    username: c.username,
+    ...(channelsById.get(c.id) || {
+      publishedCount: 0,
+      pendingCount: 0,
+      totalViews: 0,
+      viewsConfirmed: 0,
+      hours: Array.from({ length: 24 }, () => ({ count: 0, hasPending: false, hasPublished: false, hasFailed: false })),
+    }),
+  }));
+
+  res.send(views.reportDashboard(channels));
+});
+
 app.get('/privacy', (req, res) => res.send(views.privacy()));
 app.get('/terms', (req, res) => res.send(views.terms()));
 

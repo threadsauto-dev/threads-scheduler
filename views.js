@@ -66,6 +66,26 @@ const layout = (title, body) => `<!doctype html>
   .badge-comment-posted { background: #d4edda; }
   .badge-comment-needs_review { background: #f8d7da; }
   .cancel-btn { background: #fff; color: #c00; border: 1px solid #f1b0b0; padding: 4px 10px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .report-grid { display: flex; flex-wrap: wrap; gap: 20px; margin: 20px 0; }
+  .report-card { flex: 1 1 300px; border: 1px solid #eee; border-radius: 14px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
+  .report-card h3 { margin: 0 0 12px; font-size: 15px; }
+  .stat-label { font-size: 12px; color: #888; margin-bottom: 2px; }
+  .stat-value { font-size: 30px; font-weight: 700; line-height: 1.2; }
+  .stat-value.blue { color: #2563eb; }
+  .stat-value.green { color: #16a34a; }
+  .stat-value.orange { color: #d97706; }
+  .stat-sub { font-size: 12px; color: #999; margin-top: 2px; }
+  .stat-row { display: flex; gap: 28px; margin-top: 18px; padding-top: 16px; border-top: 1px solid #f0f0f0; }
+  .hour-grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 4px; margin-top: 18px; }
+  .hour-cell { text-align: center; border-radius: 6px; padding: 5px 0 4px; background: #f6f6f6; }
+  .hour-cell .h { font-size: 9px; color: #aaa; }
+  .hour-cell .n { font-weight: 700; font-size: 13px; color: #ccc; }
+  .hour-cell.published { background: #e7f7ec; }
+  .hour-cell.published .n { color: #16a34a; }
+  .hour-cell.pending { background: #fff4e5; }
+  .hour-cell.pending .n { color: #d97706; }
+  .hour-cell.failed { background: #fde8e8; }
+  .hour-cell.failed .n { color: #dc2626; }
   footer { margin-top: 40px; font-size: 13px; color: #888; }
   footer a { color: #888; }
 </style>
@@ -77,6 +97,7 @@ ${body}
 </html>`;
 
 const nav = () => `<nav>
+  <a href="/report">리포트</a>
   <a href="/channels">채널</a>
   <a href="/compose">글쓰기</a>
   <a href="/posts">발행 내역</a>
@@ -454,12 +475,14 @@ const workerStatusBanner = (heartbeat) => {
   </p>`;
 };
 
+const formatNumber = (n) => (n === null || n === undefined ? '-' : n.toLocaleString('ko-KR'));
+
 const postsHistory = (posts, heartbeat) => layout('발행 내역', `
   ${nav()}
   <h1>발행 내역</h1>
   ${workerStatusBanner(heartbeat)}
   <table>
-    <tr><th>채널</th><th>본문</th><th>예정 시각</th><th>상태</th><th>댓글</th><th>관리</th></tr>
+    <tr><th>채널</th><th>본문</th><th>예정 시각</th><th>상태</th><th>조회수</th><th>댓글</th><th>관리</th></tr>
     ${
       posts
         .map((p) => {
@@ -468,19 +491,70 @@ const postsHistory = (posts, heartbeat) => layout('발행 내역', `
             : `<span class="badge badge-comment-${p.comment_status || 'pending'}" ${
                 p.comment_error_message ? `title="${escapeHtml(p.comment_error_message)}"` : ''
               }>${COMMENT_LABELS[p.comment_status] || '-'}</span>`;
+          const viewsCell = p.status !== 'published' ? '-' : `<strong>${formatNumber(p.views)}</strong>`;
           return `<tr>
         <td>@${p.username}</td>
         <td>${(p.text || '').slice(0, 30)}</td>
         <td>${formatKst(p.scheduled_at)}</td>
         <td><span class="badge badge-${p.status}" ${p.error_message ? `title="${escapeHtml(p.error_message)}"` : ''}>${STATUS_LABELS[p.status] || p.status}</span></td>
+        <td>${viewsCell}</td>
         <td>${commentCell}</td>
         <td>${p.status === 'pending' ? pendingActions(p, '/posts') : ''}</td>
       </tr>
-      ${p.error_message ? `<tr><td colspan="6" style="font-size:12px; color:#c00; padding-top:0;">${escapeHtml(p.error_message)}</td></tr>` : ''}`;
+      ${p.error_message ? `<tr><td colspan="7" style="font-size:12px; color:#c00; padding-top:0;">${escapeHtml(p.error_message)}</td></tr>` : ''}`;
         })
-        .join('') || '<tr><td colspan="6">기록이 없습니다.</td></tr>'
+        .join('') || '<tr><td colspan="7">기록이 없습니다.</td></tr>'
     }
   </table>
+`);
+
+// 그 시간에 예정/발행/실패가 섞여 있으면 "아직 안 나간 게 있다"(예정)를 가장 먼저 보여준다
+// — 지나간 시간대라도 실패가 섞였으면 그다음으로, 전부 성공했을 때만 완료로 표시.
+function hourCellClass(hour) {
+  if (hour.hasPending) return 'pending';
+  if (hour.hasFailed) return 'failed';
+  if (hour.hasPublished) return 'published';
+  return '';
+}
+
+const reportDashboard = (channels) => layout('리포트', `
+  ${nav()}
+  <h1>오늘의 리포트</h1>
+  <p style="color:#888; font-size:13px; margin-top:-8px;">${formatKst(new Date()).split(/오전|오후/)[0].trim()} 기준 · 조회수는 발행 후 48시간 동안 20분마다 갱신됩니다.</p>
+  <div class="report-grid">
+    ${
+      channels
+        .map(
+          (ch) => `<div class="report-card">
+        <h3>@${ch.username}</h3>
+        <div class="stat-label">오늘 올린 글 조회수</div>
+        <div class="stat-value blue">${formatNumber(ch.totalViews)}</div>
+        <div class="stat-sub">${ch.publishedCount}개 글 합계 · ${ch.viewsConfirmed}/${ch.publishedCount}개 확인됨</div>
+        <div class="stat-row">
+          <div>
+            <div class="stat-label">오늘 발행 완료</div>
+            <div class="stat-value green">${ch.publishedCount}</div>
+          </div>
+          <div>
+            <div class="stat-label">오늘 발행 예정</div>
+            <div class="stat-value orange">${ch.pendingCount}</div>
+          </div>
+        </div>
+        <div class="hour-grid">
+          ${ch.hours
+            .map(
+              (h, hour) => `<div class="hour-cell ${hourCellClass(h)}">
+              <div class="h">${String(hour).padStart(2, '0')}</div>
+              <div class="n">${h.count || '-'}</div>
+            </div>`
+            )
+            .join('')}
+        </div>
+      </div>`
+        )
+        .join('') || '<p>연결된 채널이 없습니다.</p>'
+    }
+  </div>
 `);
 
 const errorPage = (message) => layout('오류', `
@@ -529,6 +603,7 @@ module.exports = {
   channelsList,
   composeForm,
   postsHistory,
+  reportDashboard,
   errorPage,
   privacy,
   terms,

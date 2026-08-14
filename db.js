@@ -83,6 +83,11 @@ async function migrate() {
   // (재발 방지: OAuth 스코프 누락 때문에 star_jakeun 채널 댓글이 조용히 계속 실패했던
   // 사고를 겪고 2026-08-14에 추가.)
   await pool.query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS reconnect_reason TEXT;`);
+  // 조회수 — 발행된 글마다 주기적으로(worker.js가 20분 간격으로) 갱신한다. views가 NULL이면
+  // 아직 한 번도 안 가져온 것, insights_updated_at은 마지막으로 시도한 시각(실패해도 찍어서
+  // 매 분마다 재시도로 API를 두들기지 않고 다른 글들과 같은 주기로만 재시도하게 한다).
+  await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS views INTEGER;`);
+  await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS insights_updated_at TIMESTAMPTZ;`);
 }
 
 module.exports = { pool, migrate };

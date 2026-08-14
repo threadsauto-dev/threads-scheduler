@@ -135,4 +135,4 @@ async function publishCommentOne(post, channel) {
   }
 }
 
-module.exports = { publishOne, publishCommentOne };
+module.exports = { publishOne, publishCommentOne, isPermissionError, flagChannelForReconnect };

@@ -36,6 +36,41 @@ async function cleanupOldMedia() {
   }
 }
 
+// 최근(48시간 이내) 게시물의 조회수만 20분 간격으로 갱신한다 — 오래된 글까지 계속
+// 갱신하면 API 호출만 늘어나고, 조회수는 시간이 지날수록 거의 안 바뀐다.
+const VIEWS_REFRESH_WINDOW_HOURS = 48;
+const VIEWS_REFRESH_INTERVAL_MINUTES = 20;
+
+async function refreshViews() {
+  const { rows } = await pool.query(
+    `SELECT sp.id, sp.published_post_id, c.id AS channel_id, c.access_token, c.username
+     FROM scheduled_posts sp
+     JOIN channels c ON c.id = sp.channel_id
+     WHERE sp.status = 'published' AND sp.published_post_id IS NOT NULL
+       AND c.disconnected_at IS NULL
+       AND sp.terminal_at IS NOT NULL AND sp.terminal_at > now() - ($1 || ' hours')::interval
+       AND (sp.insights_updated_at IS NULL OR sp.insights_updated_at < now() - ($2 || ' minutes')::interval)
+     ORDER BY sp.insights_updated_at ASC NULLS FIRST
+     LIMIT 20`,
+    [VIEWS_REFRESH_WINDOW_HOURS, VIEWS_REFRESH_INTERVAL_MINUTES]
+  );
+  for (const post of rows) {
+    try {
+      const views = await threads.getPostViews(post.published_post_id, post.access_token);
+      await pool.query(`UPDATE scheduled_posts SET views = $1, insights_updated_at = now() WHERE id = $2`, [
+        views,
+        post.id,
+      ]);
+    } catch (e) {
+      if (publisher.isPermissionError(e)) await publisher.flagChannelForReconnect(post.channel_id, e.message);
+      // 실패해도 시각은 찍어둔다 — 안 찍으면 이 글만 다음 크론(1분 뒤)에 계속 재시도돼
+      // 다른 글들과 주기가 어긋나고 API만 두들기게 된다. 다음 20분 주기에 같이 재시도된다.
+      await pool.query(`UPDATE scheduled_posts SET insights_updated_at = now() WHERE id = $1`, [post.id]);
+      console.error(`[조회수 갱신 실패] @${post.username} post #${post.id}: ${e.message}`);
+    }
+  }
+}
+
 // 만료 10일 이내로 남은 채널의 토큰을 미리 갱신 — 사용자가 신경 안 써도 60일마다 자동으로 이어진다.
 async function refreshExpiringTokens() {
   const { rows: expiring } = await pool.query(
@@ -123,6 +158,7 @@ async function run() {
     }
   }
 
+  await refreshViews();
   await cleanupOldMedia();
 }
 
