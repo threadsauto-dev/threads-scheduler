@@ -51,7 +51,10 @@ function buildAuthorizeUrl(env) {
   const url = new URL('https://threads.net/oauth/authorize');
   url.searchParams.set('client_id', env.APP_ID);
   url.searchParams.set('redirect_uri', env.REDIRECT_URI);
-  url.searchParams.set('scope', 'threads_basic,threads_content_publish');
+  // threads_read_replies: hasOwnReply()가 재시도 전 기존 댓글 목록을 확인하는 데 필요.
+  // threads_manage_replies: 댓글(답글) 발행/관리에 필요 — content_publish만으론 부족했다
+  // (실제로 star_jakeun 채널에서 "Application does not have permission" 에러로 확인됨).
+  url.searchParams.set('scope', 'threads_basic,threads_content_publish,threads_read_replies,threads_manage_replies');
   url.searchParams.set('response_type', 'code');
   return url.toString();
 }
