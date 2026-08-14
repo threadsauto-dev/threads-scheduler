@@ -103,10 +103,29 @@ const channelsList = (channels) => layout('채널', `
   ${nav()}
   <h1>연결된 채널</h1>
   <table>
-    <tr><th>계정</th><th>연결일</th></tr>
-    ${channels
-      .map((c) => `<tr><td>@${c.username}</td><td>${formatKst(c.created_at)}</td></tr>`)
-      .join('') || '<tr><td colspan="2">연결된 채널이 없습니다.</td></tr>'}
+    <tr><th>계정</th><th>연결일</th><th>상태</th><th>관리</th></tr>
+    ${
+      channels
+        .map(
+          (c) => `<tr>
+      <td>@${c.username}</td>
+      <td>${formatKst(c.created_at)}</td>
+      <td>${
+        c.disconnected_at
+          ? `<span class="badge badge-canceled">연결 해제됨</span>`
+          : `<span class="badge badge-published">연결됨</span>`
+      }</td>
+      <td>${
+        c.disconnected_at
+          ? ''
+          : `<form method="post" action="/channels/${c.id}/disconnect" style="margin:0;" onsubmit="return confirm('@${c.username} 연결을 해제할까요? 이 계정에 예정된 게시물은 모두 취소됩니다.');">
+               <button type="submit" class="cancel-btn">연결 해제</button>
+             </form>`
+      }</td>
+    </tr>`
+        )
+        .join('') || '<tr><td colspan="4">연결된 채널이 없습니다.</td></tr>'
+    }
   </table>
   <a class="button" href="/channels/connect">+ 새 채널 연결</a>
 `);

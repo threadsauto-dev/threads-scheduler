@@ -6,7 +6,7 @@ const threads = require('./threads');
 // 만료 10일 이내로 남은 채널의 토큰을 미리 갱신 — 사용자가 신경 안 써도 60일마다 자동으로 이어진다.
 async function refreshExpiringTokens() {
   const { rows: expiring } = await pool.query(
-    `SELECT * FROM channels WHERE token_expires_at < now() + interval '10 days'`
+    `SELECT * FROM channels WHERE disconnected_at IS NULL AND token_expires_at < now() + interval '10 days'`
   );
   for (const channel of expiring) {
     try {
@@ -44,10 +44,10 @@ async function run() {
     for (const post of duePosts) {
       const { rows: channelRows } = await pool.query('SELECT * FROM channels WHERE id = $1', [post.channel_id]);
       const channel = channelRows[0];
-      if (!channel) {
+      if (!channel || channel.disconnected_at) {
         await pool.query(
-          `UPDATE scheduled_posts SET status = 'failed', error_message = '채널을 찾을 수 없음' WHERE id = $1`,
-          [post.id]
+          `UPDATE scheduled_posts SET status = 'failed', error_message = $1 WHERE id = $2`,
+          [channel ? '채널 연결이 해제됨' : '채널을 찾을 수 없음', post.id]
         );
         continue;
       }
@@ -80,10 +80,10 @@ async function run() {
   for (const post of dueComments) {
     const { rows: channelRows } = await pool.query('SELECT * FROM channels WHERE id = $1', [post.channel_id]);
     const channel = channelRows[0];
-    if (!channel) {
+    if (!channel || channel.disconnected_at) {
       await pool.query(
-        `UPDATE scheduled_posts SET comment_status = 'needs_review', comment_error_message = '채널을 찾을 수 없음' WHERE id = $1`,
-        [post.id]
+        `UPDATE scheduled_posts SET comment_status = 'needs_review', comment_error_message = $1 WHERE id = $2`,
+        [channel ? '채널 연결이 해제됨' : '채널을 찾을 수 없음', post.id]
       );
       continue;
     }

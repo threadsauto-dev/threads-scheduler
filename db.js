@@ -49,6 +49,10 @@ async function migrate() {
   await pool.query(
     `CREATE INDEX IF NOT EXISTS idx_scheduled_posts_comment_due ON scheduled_posts (comment_status, comment_due_at);`
   );
+  // 연결 해제된 채널 표시. 행 자체는 지우지 않는다 — 지우면(CASCADE) 발행 내역까지 같이
+  // 사라지므로, 대신 access_token만 비우고(개인정보처리방침이 약속한 "즉시 폐기") 이후
+  // 새 글쓰기/자동 재시도 대상에서만 제외한다.
+  await pool.query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS disconnected_at TIMESTAMPTZ;`);
 }
 
 module.exports = { pool, migrate };
