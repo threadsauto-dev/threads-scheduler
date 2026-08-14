@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const express = require('express');
 const cookieParser = require('cookie-parser');
 const multer = require('multer');
@@ -10,8 +11,48 @@ const storage = require('./storage');
 
 const env = loadEnv();
 const app = express();
+// Render 등 리버스 프록시 뒤에서 돈다 — 이게 없으면 req.ip가 프록시 IP로 고정돼 로그인
+// 시도 제한이 사실상 전체 방문자를 하나로 묶어버리고, req.protocol도 부정확해져서
+// 아래 관리자 쿠키의 secure 플래그가 실제로는 https인데도 꺼질 수 있다.
+app.set('trust proxy', 1);
 app.use(cookieParser(env.COOKIE_SECRET));
 app.use(express.urlencoded({ extended: false }));
+
+// 비밀번호 하나로 이 인스턴스에 연결된 모든 채널 + 쿠팡 수익 콘텐츠 전체가 열리므로,
+// 무차별 대입을 막기 위해 IP별로 실패 횟수를 센다. 인스턴스 하나짜리 소규모 앱이라
+// 메모리 저장으로 충분 — 여러 인스턴스로 스케일하게 되면 공유 저장소로 옮겨야 한다.
+const LOGIN_MAX_ATTEMPTS = 5;
+const LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
+const loginAttempts = new Map(); // ip -> { count, firstAttemptAt, lockedUntil }
+
+function checkLoginLockout(ip) {
+  const entry = loginAttempts.get(ip);
+  if (entry && entry.lockedUntil && entry.lockedUntil > Date.now()) {
+    return entry.lockedUntil - Date.now();
+  }
+  return 0;
+}
+
+function recordFailedLogin(ip) {
+  const now = Date.now();
+  let entry = loginAttempts.get(ip);
+  // 이전 실패가 락아웃 기간의 2배보다 오래됐으면 다시 새로 센다 — Map이 무한정 안 쌓이게.
+  if (!entry || now - entry.firstAttemptAt > LOGIN_LOCKOUT_MS * 2) {
+    entry = { count: 0, firstAttemptAt: now, lockedUntil: 0 };
+  }
+  entry.count += 1;
+  if (entry.count >= LOGIN_MAX_ATTEMPTS) entry.lockedUntil = now + LOGIN_LOCKOUT_MS;
+  loginAttempts.set(ip, entry);
+}
+
+// 길이가 다른 문자열을 그냥 ===로 비교하면 몇 번째 글자에서 다른지에 따라 비교가
+// 끝나는 시점이 미묘하게 달라져(타이밍 공격) 이론적으로 정답을 한 글자씩 유추당할 수
+// 있다. 두 값을 고정 길이 해시로 바꿔서 비교하면 이 시간차가 사라진다.
+function safeCompare(a, b) {
+  const hashA = crypto.createHash('sha256').update(String(a)).digest();
+  const hashB = crypto.createHash('sha256').update(String(b)).digest();
+  return crypto.timingSafeEqual(hashA, hashB);
+}
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 30 * 1024 * 1024 } });
 
@@ -30,7 +71,14 @@ app.get('/', (req, res) => res.send(views.landing()));
 app.get('/login', (req, res) => res.send(views.adminLogin()));
 
 app.post('/login', (req, res) => {
-  if (req.body.password === env.ADMIN_PASSWORD) {
+  const remainingLockMs = checkLoginLockout(req.ip);
+  if (remainingLockMs > 0) {
+    const minutes = Math.ceil(remainingLockMs / 60000);
+    return res.status(429).send(views.adminLogin(`로그인 시도가 너무 많습니다. ${minutes}분 후 다시 시도해주세요.`));
+  }
+
+  if (safeCompare(req.body.password || '', env.ADMIN_PASSWORD)) {
+    loginAttempts.delete(req.ip);
     res.cookie('admin', '1', {
       httpOnly: true,
       signed: true,
@@ -40,6 +88,7 @@ app.post('/login', (req, res) => {
     });
     return res.redirect('/channels');
   }
+  recordFailedLogin(req.ip);
   res.status(401).send(views.adminLogin('비밀번호가 틀렸습니다.'));
 });
 
