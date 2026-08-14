@@ -2,6 +2,39 @@
 const { pool, migrate } = require('./db');
 const publisher = require('./publisher');
 const threads = require('./threads');
+const storage = require('./storage');
+const { loadEnv } = require('./env');
+
+const env = loadEnv();
+
+// R2에 올린 원본 미디어는 Threads가 발행 시점에 이미 가져가 자체 저장하므로, 게시물
+// 상태가 확정(terminal_at)된 지 이만큼 지나면 우리 쪽 원본은 지워도 안전하다 — 그동안은
+// 사용자가 실패한 글을 고쳐서 재예약하는 등 다시 참조할 여지를 남겨둔다.
+const MEDIA_CLEANUP_GRACE_DAYS = 5;
+
+async function cleanupOldMedia() {
+  const { rows } = await pool.query(
+    `SELECT id, media FROM scheduled_posts
+     WHERE media_cleaned_at IS NULL AND media <> '[]'::jsonb
+       AND status IN ('published', 'failed', 'canceled')
+       AND terminal_at IS NOT NULL AND terminal_at <= now() - ($1 || ' days')::interval
+     LIMIT 50`,
+    [MEDIA_CLEANUP_GRACE_DAYS]
+  );
+  if (rows.length === 0) return;
+
+  for (const post of rows) {
+    try {
+      for (const item of post.media || []) {
+        await storage.deleteFile(env, item.url);
+      }
+      await pool.query(`UPDATE scheduled_posts SET media_cleaned_at = now() WHERE id = $1`, [post.id]);
+      console.log(`[미디어 정리 완료] post #${post.id} (${(post.media || []).length}개)`);
+    } catch (e) {
+      console.error(`[미디어 정리 실패] post #${post.id}: ${e.message}`);
+    }
+  }
+}
 
 // 만료 10일 이내로 남은 채널의 토큰을 미리 갱신 — 사용자가 신경 안 써도 60일마다 자동으로 이어진다.
 async function refreshExpiringTokens() {
@@ -46,7 +79,7 @@ async function run() {
       const channel = channelRows[0];
       if (!channel || channel.disconnected_at) {
         await pool.query(
-          `UPDATE scheduled_posts SET status = 'failed', error_message = $1 WHERE id = $2`,
+          `UPDATE scheduled_posts SET status = 'failed', error_message = $1, terminal_at = now() WHERE id = $2`,
           [channel ? '채널 연결이 해제됨' : '채널을 찾을 수 없음', post.id]
         );
         continue;
@@ -74,22 +107,23 @@ async function run() {
 
   if (dueComments.length === 0) {
     console.log('처리할 댓글 없음');
-    return;
+  } else {
+    for (const post of dueComments) {
+      const { rows: channelRows } = await pool.query('SELECT * FROM channels WHERE id = $1', [post.channel_id]);
+      const channel = channelRows[0];
+      if (!channel || channel.disconnected_at) {
+        await pool.query(
+          `UPDATE scheduled_posts SET comment_status = 'needs_review', comment_error_message = $1 WHERE id = $2`,
+          [channel ? '채널 연결이 해제됨' : '채널을 찾을 수 없음', post.id]
+        );
+        continue;
+      }
+      await publisher.publishCommentOne(post, channel);
+      console.log(`[댓글 처리] @${channel.username} post #${post.id}`);
+    }
   }
 
-  for (const post of dueComments) {
-    const { rows: channelRows } = await pool.query('SELECT * FROM channels WHERE id = $1', [post.channel_id]);
-    const channel = channelRows[0];
-    if (!channel || channel.disconnected_at) {
-      await pool.query(
-        `UPDATE scheduled_posts SET comment_status = 'needs_review', comment_error_message = $1 WHERE id = $2`,
-        [channel ? '채널 연결이 해제됨' : '채널을 찾을 수 없음', post.id]
-      );
-      continue;
-    }
-    await publisher.publishCommentOne(post, channel);
-    console.log(`[댓글 처리] @${channel.username} post #${post.id}`);
-  }
+  await cleanupOldMedia();
 }
 
 run()

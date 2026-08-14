@@ -1,4 +1,4 @@
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const crypto = require('crypto');
 
 function getClient(env) {
@@ -28,4 +28,14 @@ async function uploadFile(env, buffer, contentType) {
   return `${env.R2_PUBLIC_URL.replace(/\/$/, '')}/${key}`;
 }
 
-module.exports = { uploadFile };
+// uploadFile()이 돌려준 공개 URL을 받아 R2에서 그 객체를 지운다. Threads가 발행 시점에
+// 이미 미디어를 가져가 자체 저장해두므로, 발행이 확정된 지 한참 지난 뒤엔 우리 쪽 원본은
+// 더 필요 없다 — worker.js의 정리 배치가 이 함수를 호출한다.
+async function deleteFile(env, url) {
+  const prefix = `${env.R2_PUBLIC_URL.replace(/\/$/, '')}/`;
+  const key = url.startsWith(prefix) ? url.slice(prefix.length) : url;
+  const client = getClient(env);
+  await client.send(new DeleteObjectCommand({ Bucket: env.R2_BUCKET, Key: key }));
+}
+
+module.exports = { uploadFile, deleteFile };

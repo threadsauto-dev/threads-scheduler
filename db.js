@@ -53,6 +53,19 @@ async function migrate() {
   // 사라지므로, 대신 access_token만 비우고(개인정보처리방침이 약속한 "즉시 폐기") 이후
   // 새 글쓰기/자동 재시도 대상에서만 제외한다.
   await pool.query(`ALTER TABLE channels ADD COLUMN IF NOT EXISTS disconnected_at TIMESTAMPTZ;`);
+  // terminal_at: status가 published/failed/canceled로 "확정"된 시각 (재시도로 되돌아갈 일이
+  // 없어진 시점). scheduled_at은 취소된 미래 예약처럼 확정 시점과 어긋날 수 있어 따로 둔다.
+  // R2에 올린 원본 미디어는 Threads가 발행 시점에 이미 가져가 자체 저장하므로, 확정된 지
+  // 며칠 지난 뒤엔 안전하게 지울 수 있다 — media_cleaned_at은 그 정리가 끝났는지 표시.
+  await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS terminal_at TIMESTAMPTZ;`);
+  await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS media_cleaned_at TIMESTAMPTZ;`);
+  // terminal_at이 이 컬럼 추가 이전에 이미 확정된 과거 행에는 채워져 있지 않아 정리 대상에
+  // 영영 안 잡힌다 — scheduled_at을 확정 시점의 근사값으로 한 번만 채워준다(이미 채워진
+  // 행은 건드리지 않으므로 매 마이그레이션마다 실행해도 안전).
+  await pool.query(
+    `UPDATE scheduled_posts SET terminal_at = scheduled_at
+     WHERE status IN ('published', 'failed', 'canceled') AND terminal_at IS NULL;`
+  );
 }
 
 module.exports = { pool, migrate };

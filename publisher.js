@@ -24,13 +24,15 @@ async function publishOne(post, channel) {
       // 댓글이 있는 게시물이면, 본문 발행 성공과 동시에 "5분 뒤부터 댓글 시도"를 예약해둔다.
       await pool.query(
         `UPDATE scheduled_posts SET status = 'published', published_post_id = $1, error_message = NULL,
-         comment_status = 'pending', comment_due_at = now() + interval '5 minutes', comment_retry_count = 0
+         terminal_at = now(), comment_status = 'pending', comment_due_at = now() + interval '5 minutes',
+         comment_retry_count = 0
          WHERE id = $2`,
         [postId, post.id]
       );
     } else {
       await pool.query(
-        `UPDATE scheduled_posts SET status = 'published', published_post_id = $1, error_message = NULL WHERE id = $2`,
+        `UPDATE scheduled_posts SET status = 'published', published_post_id = $1, error_message = NULL, terminal_at = now()
+         WHERE id = $2`,
         [postId, post.id]
       );
     }
@@ -43,7 +45,7 @@ async function publishOne(post, channel) {
       // 서버에 반영됐을 수 있다. 자동 재시도하면 중복 게시로 이어질 수 있으므로
       // 무조건 즉시 'failed'로 남기고, 사람이 Threads에서 직접 확인하게 한다.
       await pool.query(
-        `UPDATE scheduled_posts SET status = 'failed', retry_count = $1, error_message = $2 WHERE id = $3`,
+        `UPDATE scheduled_posts SET status = 'failed', retry_count = $1, error_message = $2, terminal_at = now() WHERE id = $3`,
         [retryCount, `[Threads에서 실제 게시 여부 직접 확인 필요] ${e.message}`, post.id]
       );
     } else {
@@ -51,7 +53,9 @@ async function publishOne(post, channel) {
       // 재시도할 거면 'pending'으로 되돌려서 다음 크론 사이클(1분 뒤)에 다시 집어가게 한다.
       const willRetry = isRetryableError(e) && retryCount <= MAX_RETRIES;
       await pool.query(
-        `UPDATE scheduled_posts SET status = $1, retry_count = $2, error_message = $3 WHERE id = $4`,
+        `UPDATE scheduled_posts SET status = $1, retry_count = $2, error_message = $3,
+         terminal_at = CASE WHEN $1 = 'failed' THEN now() ELSE terminal_at END
+         WHERE id = $4`,
         [willRetry ? 'pending' : 'failed', retryCount, e.message, post.id]
       );
     }

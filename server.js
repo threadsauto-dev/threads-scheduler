@@ -65,9 +65,10 @@ app.post('/channels/:id/disconnect', requireAdmin, async (req, res) => {
     `UPDATE channels SET access_token = '', token_expires_at = now(), disconnected_at = now() WHERE id = $1`,
     [req.params.id]
   );
-  await pool.query(`UPDATE scheduled_posts SET status = 'canceled' WHERE channel_id = $1 AND status = 'pending'`, [
-    req.params.id,
-  ]);
+  await pool.query(
+    `UPDATE scheduled_posts SET status = 'canceled', terminal_at = now() WHERE channel_id = $1 AND status = 'pending'`,
+    [req.params.id]
+  );
   res.redirect('/channels');
 });
 
@@ -237,9 +238,10 @@ app.post(
 );
 
 app.post('/posts/:id/cancel', requireAdmin, async (req, res) => {
-  await pool.query(`UPDATE scheduled_posts SET status = 'canceled' WHERE id = $1 AND status = 'pending'`, [
-    req.params.id,
-  ]);
+  await pool.query(
+    `UPDATE scheduled_posts SET status = 'canceled', terminal_at = now() WHERE id = $1 AND status = 'pending'`,
+    [req.params.id]
+  );
   res.redirect(req.body.redirectTo === '/posts' ? '/posts' : '/compose');
 });
 
