@@ -97,10 +97,10 @@ ${body}
 </html>`;
 
 const nav = () => `<nav>
-  <a href="/report">리포트</a>
   <a href="/channels">채널</a>
   <a href="/compose">글쓰기</a>
   <a href="/posts">발행 내역</a>
+  <a href="/report">리포트</a>
   <a href="/logout">로그아웃</a>
 </nav>`;
 
@@ -119,6 +119,43 @@ const adminLogin = (error) => layout('관리자 로그인', `
     <button type="submit">로그인</button>
   </form>
 `);
+
+const SLOT_TYPES = ['정보성', '광고용'];
+
+// 채널 하나의 TIME BOX(고정 시간표) 관리 UI — 매일 반복되는 슬롯을 추가/삭제하고,
+// 오늘 기준으로 슬롯이 몇 개나 남았는지 보여준다.
+const channelSlotBox = (c) => {
+  if (c.disconnected_at) return '';
+  const summary = c.todaySummary || { 정보성: { total: 0, remaining: 0 }, 광고용: { total: 0, remaining: 0 } };
+  return `
+  <div style="border:1px solid #eee; border-radius:10px; padding:14px 16px; margin:-8px 0 20px;">
+    <div style="font-size:13px; color:#888; margin-bottom:8px;">
+      오늘 정보성 ${summary.정보성.remaining}/${summary.정보성.total}개 남음 · 광고용 ${summary.광고용.remaining}/${summary.광고용.total}개 남음
+    </div>
+    ${
+      (c.slots || []).length === 0
+        ? '<p style="font-size:13px; color:#999; margin:4px 0 10px;">등록된 시간대가 없습니다.</p>'
+        : `<div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px;">
+      ${c.slots
+        .map(
+          (s) => `<form method="post" action="/channels/${c.id}/slots/${s.id}/delete" style="margin:0;" onsubmit="return confirm('${s.slot_time.slice(0, 5)} ${s.slot_type} 슬롯을 삭제할까요?');">
+        <button type="submit" style="font-size:12px; padding:4px 8px; border-radius:999px; border:1px solid #ddd; background:${s.slot_type === '정보성' ? '#eef4ff' : '#fff4e5'}; cursor:pointer;">
+          ${s.slot_time.slice(0, 5)} ${s.slot_type} ✕
+        </button>
+      </form>`
+        )
+        .join('')}
+    </div>`
+    }
+    <form method="post" action="/channels/${c.id}/slots" style="display:flex; gap:8px; align-items:center; margin:0;">
+      <input type="time" name="slotTime" required style="width:auto; margin:0;" />
+      <select name="slotType" required style="width:auto; margin:0;">
+        ${SLOT_TYPES.map((t) => `<option value="${t}">${t}</option>`).join('')}
+      </select>
+      <button type="submit" style="padding:8px 14px; font-size:13px;">+ 시간대 추가</button>
+    </form>
+  </div>`;
+};
 
 const channelsList = (channels) => layout('채널', `
   ${nav()}
@@ -148,7 +185,8 @@ const channelsList = (channels) => layout('채널', `
       c.reconnect_reason
         ? `<tr><td colspan="4" style="font-size:13px; color:#c00; padding-top:0;">⚠ ${escapeHtml(c.reconnect_reason)}</td></tr>`
         : ''
-    }`
+    }
+    <tr><td colspan="4" style="padding-top:0;">${channelSlotBox(c)}</td></tr>`
         )
         .join('') || '<tr><td colspan="4">연결된 채널이 없습니다.</td></tr>'
     }
@@ -201,13 +239,19 @@ const composeForm = (channels, message, upcomingPending = [], selectedChannelId,
       : `<form method="post" action="/compose" enctype="multipart/form-data">
     ${editingPost ? `<input type="hidden" name="editId" value="${editingPost.id}" />` : ''}
     <label>채널</label>
-    <select name="channelId" required>
+    <select name="channelId" id="channelSelect" required>
       ${channels
         .map(
           (c) =>
             `<option value="${c.id}" ${String(c.id) === String(selectedChannelId) ? 'selected' : ''}>@${c.username}</option>`
         )
         .join('')}
+    </select>
+    <label>태그</label>
+    <select name="tag" id="tagSelect">
+      <option value="">(선택 안 함)</option>
+      <option value="정보성" ${editingPost?.tag === '정보성' ? 'selected' : ''}>정보성</option>
+      <option value="광고용" ${editingPost?.tag === '광고용' ? 'selected' : ''}>광고용</option>
     </select>
     <label>본문</label>
     <textarea name="text" id="composeText" rows="5" required placeholder="게시할 내용을 입력하세요">${editingPost ? escapeHtml(editingPost.text || '') : ''}</textarea>
@@ -436,6 +480,36 @@ const composeForm = (channels, message, upcomingPending = [], selectedChannelId,
       </select>
       분
     </div>
+    <button type="button" id="nextSlotBtn" style="background:#fff; color:#000; border:1px solid #ccc; padding:8px 16px; font-size:13px; margin-bottom:16px;">📅 다음 빈 슬롯 채우기</button>
+    <span id="nextSlotStatus" style="font-size:13px; color:#888; margin-left:8px;"></span>
+    <script>
+      (function () {
+        var btn = document.getElementById('nextSlotBtn');
+        var status = document.getElementById('nextSlotStatus');
+        btn.addEventListener('click', function () {
+          var channelId = document.getElementById('channelSelect').value;
+          var tag = document.getElementById('tagSelect').value;
+          if (!tag) {
+            status.textContent = '태그(정보성/광고용)를 먼저 골라주세요.';
+            return;
+          }
+          status.textContent = '조회 중...';
+          fetch('/channels/' + channelId + '/next-slot?tag=' + encodeURIComponent(tag))
+            .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+            .then(function (res) {
+              if (!res.ok) {
+                status.textContent = res.data.error || '빈 슬롯을 찾지 못했습니다.';
+                return;
+              }
+              document.getElementById('scheduledDate').value = res.data.dateStr;
+              document.getElementById('scheduledHour').value = res.data.hour;
+              document.getElementById('scheduledMinute').value = res.data.minute;
+              status.textContent = res.data.dateStr + ' ' + res.data.hour + ':' + res.data.minute + '(으)로 채웠어요.';
+            })
+            .catch(function () { status.textContent = '조회 실패 — 네트워크를 확인해주세요.'; });
+        });
+      })();
+    </script>
     ${
       editingPost
         ? ''

@@ -8,6 +8,7 @@ const views = require('./views');
 const { pool, migrate } = require('./db');
 const publisher = require('./publisher');
 const storage = require('./storage');
+const slots = require('./slots');
 
 const env = loadEnv();
 const app = express();
@@ -103,11 +104,58 @@ app.get('/logout', (req, res) => {
 
 app.get('/channels', requireAdmin, async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM channels ORDER BY created_at DESC');
-  res.send(views.channelsList(rows));
+  const { rows: slotRows } = await pool.query(
+    'SELECT * FROM channel_slots WHERE channel_id = ANY($1) ORDER BY channel_id, slot_time',
+    [rows.map((c) => c.id)]
+  );
+  const slotsByChannel = new Map();
+  for (const s of slotRows) {
+    if (!slotsByChannel.has(s.channel_id)) slotsByChannel.set(s.channel_id, []);
+    slotsByChannel.get(s.channel_id).push(s);
+  }
+  const summaries = await Promise.all(
+    rows.map((c) => (c.disconnected_at ? null : slots.getTodaySlotSummary(pool, c.id)))
+  );
+  const channelsWithSlots = rows.map((c, i) => ({
+    ...c,
+    slots: slotsByChannel.get(c.id) || [],
+    todaySummary: summaries[i],
+  }));
+  res.send(views.channelsList(channelsWithSlots));
 });
 
 app.get('/channels/connect', requireAdmin, (req, res) => {
   res.redirect(threads.buildAuthorizeUrl(env));
+});
+
+app.post('/channels/:id/slots', requireAdmin, async (req, res) => {
+  const { slotTime, slotType } = req.body;
+  if (!slotTime || !['정보성', '광고용'].includes(slotType)) {
+    return res.status(400).send(views.errorPage('슬롯 시간/유형이 올바르지 않습니다.'));
+  }
+  await pool.query(`INSERT INTO channel_slots (channel_id, slot_time, slot_type) VALUES ($1, $2, $3)`, [
+    req.params.id,
+    slotTime,
+    slotType,
+  ]);
+  res.redirect('/channels');
+});
+
+app.post('/channels/:id/slots/:slotId/delete', requireAdmin, async (req, res) => {
+  await pool.query(`DELETE FROM channel_slots WHERE id = $1 AND channel_id = $2`, [
+    req.params.slotId,
+    req.params.id,
+  ]);
+  res.redirect('/channels');
+});
+
+// 글쓰기 화면에서 "다음 빈 슬롯 채우기"가 부르는 조회 전용 엔드포인트.
+app.get('/channels/:id/next-slot', requireAdmin, async (req, res) => {
+  const tag = req.query.tag;
+  if (!['정보성', '광고용'].includes(tag)) return res.status(400).json({ error: '태그가 올바르지 않습니다.' });
+  const next = await slots.getNextAvailableSlot(pool, req.params.id, tag);
+  if (!next) return res.status(404).json({ error: '이 채널에 등록된 빈 슬롯을 찾지 못했습니다. 설정을 확인해주세요.' });
+  res.json(next);
 });
 
 // 연결 해제: 행을 지우면(ON DELETE CASCADE) 발행 내역까지 같이 사라지므로, 대신
@@ -205,7 +253,8 @@ app.post(
   requireAdmin,
   upload.fields([{ name: 'mediaFiles', maxCount: 20 }]),
   async (req, res) => {
-    const { channelId, text, replyText, scheduledDate, scheduledHour, scheduledMinute, editId } = req.body;
+    const { channelId, text, replyText, scheduledDate, scheduledHour, scheduledMinute, editId, tag } = req.body;
+    const normalizedTag = ['정보성', '광고용'].includes(tag) ? tag : null;
 
     const { rows: channelRows } = await pool.query(
       'SELECT * FROM channels WHERE id = $1 AND disconnected_at IS NULL',
@@ -251,9 +300,9 @@ app.post(
     if (editId) {
       // 발행 시각이 지나 크론이 이미 집어간(processing/published) 예약은 수정 못 하게 status='pending'을 같이 확인.
       const { rows: updated } = await pool.query(
-        `UPDATE scheduled_posts SET channel_id = $1, text = $2, media = $3, reply_text = $4, scheduled_at = $5, retry_count = 0
-         WHERE id = $6 AND status = 'pending' RETURNING *`,
-        [channel.id, text, JSON.stringify(media), replyText || null, scheduledAt, editId]
+        `UPDATE scheduled_posts SET channel_id = $1, text = $2, media = $3, reply_text = $4, scheduled_at = $5, tag = $6, retry_count = 0
+         WHERE id = $7 AND status = 'pending' RETURNING *`,
+        [channel.id, text, JSON.stringify(media), replyText || null, scheduledAt, normalizedTag, editId]
       );
       post = updated[0];
       if (!post) {
@@ -263,9 +312,9 @@ app.post(
       }
     } else {
       const { rows: inserted } = await pool.query(
-        `INSERT INTO scheduled_posts (channel_id, text, media, reply_text, scheduled_at)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-        [channel.id, text, JSON.stringify(media), replyText || null, scheduledAt]
+        `INSERT INTO scheduled_posts (channel_id, text, media, reply_text, scheduled_at, tag)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+        [channel.id, text, JSON.stringify(media), replyText || null, scheduledAt, normalizedTag]
       );
       post = inserted[0];
     }

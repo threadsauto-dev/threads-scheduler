@@ -88,6 +88,22 @@ async function migrate() {
   // 매 분마다 재시도로 API를 두들기지 않고 다른 글들과 같은 주기로만 재시도하게 한다).
   await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS views INTEGER;`);
   await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS insights_updated_at TIMESTAMPTZ;`);
+
+  // TIME BOX: 채널마다 "몇 시에 정보성/광고성을 올릴지" 매일 반복되는 고정 시간표.
+  // 채널이 지워지면(ON DELETE CASCADE) 그 채널의 슬롯도 같이 지워짐.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS channel_slots (
+      id SERIAL PRIMARY KEY,
+      channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+      slot_time TIME NOT NULL,
+      slot_type TEXT NOT NULL CHECK (slot_type IN ('정보성', '광고용')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_channel_slots_channel ON channel_slots (channel_id, slot_time);`);
+  // 어느 슬롯에서 나온 예약인지 기록 — 정보성/광고성 구분을 발행 내역에서도 볼 수 있고,
+  // "이 슬롯 이미 오늘 채워졌는지" 점유 여부를 계산할 때도 씀.
+  await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS tag TEXT;`);
 }
 
 module.exports = { pool, migrate };
