@@ -179,11 +179,14 @@ app.get('/channels/:id/next-slot', requireAdmin, async (req, res) => {
 // 슬롯(그 태그 기준)에 자동 배정해서 예약한다 — 어느 채널로 갈지는 이 서버가 정하고,
 // 확장 프로그램은 이 호출을 준비된 개수만큼 순서대로(동시에 X) 반복하기만 하면 된다.
 app.post('/api/schedule', requireAdminApi, upload.fields([{ name: 'mediaFiles', maxCount: 20 }]), async (req, res) => {
-  const { text, replyText, tag } = req.body;
+  const { text, replyText, tag, startDate } = req.body;
   if (!['정보성', '광고용'].includes(tag)) return res.status(400).json({ error: '태그(정보성/광고용)가 올바르지 않습니다.' });
   if (!text || !text.trim()) return res.status(400).json({ error: '본문이 비어있습니다.' });
+  if (startDate && !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
+    return res.status(400).json({ error: 'startDate 형식이 올바르지 않습니다 (YYYY-MM-DD).' });
+  }
 
-  const assignment = await slots.getNextAvailableSlotAnyChannel(pool, tag);
+  const assignment = await slots.getNextAvailableSlotAnyChannel(pool, tag, startDate || undefined);
   if (!assignment) {
     return res
       .status(409)

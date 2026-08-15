@@ -15,8 +15,10 @@ function toKstParts(date) {
 }
 
 // 특정 채널·태그의 다음 빈 슬롯을 찾아 { dateStr, hour, minute }(KST)로 돌려준다.
+// fromDateStr("YYYY-MM-DD")을 주면 오늘이 아니라 그 날짜부터 검색을 시작한다(미리 준비해둔
+// 콘텐츠를 특정 날짜부터 배치하고 싶을 때). 생략하면 지금(오늘)부터.
 // 슬롯이 하나도 등록 안 됐거나(설정 안 함) 검색 기간 안에 빈 슬롯이 없으면 null.
-async function getNextAvailableSlot(pool, channelId, tag) {
+async function getNextAvailableSlot(pool, channelId, tag, fromDateStr) {
   const { rows: slots } = await pool.query(
     `SELECT slot_time FROM channel_slots WHERE channel_id = $1 AND slot_type = $2 ORDER BY slot_time`,
     [channelId, tag]
@@ -26,14 +28,17 @@ async function getNextAvailableSlot(pool, channelId, tag) {
   const { rows: existing } = await pool.query(
     `SELECT scheduled_at FROM scheduled_posts
      WHERE channel_id = $1 AND status != 'canceled'
-       AND scheduled_at > now() - interval '1 day' AND scheduled_at < now() + interval '${SEARCH_DAYS + 1} days'`,
+       AND scheduled_at > now() - interval '1 day' AND scheduled_at < now() + interval '${SEARCH_DAYS + 31} days'`,
     [channelId]
   );
   const occupied = existing.map((r) => toKstParts(new Date(r.scheduled_at)));
 
   const now = new Date();
-  const todayStartKst = new Date(now.getTime() + KST_OFFSET_MS);
-  todayStartKst.setUTCHours(0, 0, 0, 0);
+  const searchStartKst = fromDateStr
+    ? new Date(Date.parse(`${fromDateStr}T00:00:00+09:00`) + KST_OFFSET_MS)
+    : new Date(now.getTime() + KST_OFFSET_MS);
+  searchStartKst.setUTCHours(0, 0, 0, 0);
+  const todayStartKst = searchStartKst;
 
   for (let dayOffset = 0; dayOffset < SEARCH_DAYS; dayOffset++) {
     const dateStr = new Date(todayStartKst.getTime() + dayOffset * DAY_MS).toISOString().slice(0, 10);
@@ -68,13 +73,13 @@ async function getNextAvailableSlot(pool, channelId, tag) {
 // 연결된 모든 채널을 통틀어 "가장 먼저 비어있는 슬롯"을 찾는다 — 어느 채널로 갈지는
 // 신경 쓰지 않고, 채널별 슬롯 합계와 확장 프로그램에서 준비하는 개수를 미리 맞춰두면
 // 순서대로 채우기만 해도 각 채널에 정확히 맞게 자동 분배된다는 전제로 설계함.
-async function getNextAvailableSlotAnyChannel(pool, tag) {
+async function getNextAvailableSlotAnyChannel(pool, tag, fromDateStr) {
   const { rows: channels } = await pool.query(`SELECT id FROM channels WHERE disconnected_at IS NULL`);
   if (channels.length === 0) return null;
 
   const candidates = (
     await Promise.all(
-      channels.map(async (c) => ({ channelId: c.id, slot: await getNextAvailableSlot(pool, c.id, tag) }))
+      channels.map(async (c) => ({ channelId: c.id, slot: await getNextAvailableSlot(pool, c.id, tag, fromDateStr) }))
     )
   ).filter((r) => r.slot);
   if (candidates.length === 0) return null;
