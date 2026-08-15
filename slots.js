@@ -65,6 +65,29 @@ async function getNextAvailableSlot(pool, channelId, tag) {
   return null;
 }
 
+// 연결된 모든 채널을 통틀어 "가장 먼저 비어있는 슬롯"을 찾는다 — 어느 채널로 갈지는
+// 신경 쓰지 않고, 채널별 슬롯 합계와 확장 프로그램에서 준비하는 개수를 미리 맞춰두면
+// 순서대로 채우기만 해도 각 채널에 정확히 맞게 자동 분배된다는 전제로 설계함.
+async function getNextAvailableSlotAnyChannel(pool, tag) {
+  const { rows: channels } = await pool.query(`SELECT id FROM channels WHERE disconnected_at IS NULL`);
+  if (channels.length === 0) return null;
+
+  const candidates = (
+    await Promise.all(
+      channels.map(async (c) => ({ channelId: c.id, slot: await getNextAvailableSlot(pool, c.id, tag) }))
+    )
+  ).filter((r) => r.slot);
+  if (candidates.length === 0) return null;
+
+  candidates.sort((a, b) => {
+    const aKey = `${a.slot.dateStr}T${a.slot.hour}:${a.slot.minute}`;
+    const bKey = `${b.slot.dateStr}T${b.slot.hour}:${b.slot.minute}`;
+    return aKey < bKey ? -1 : aKey > bKey ? 1 : 0;
+  });
+  const best = candidates[0];
+  return { channelId: best.channelId, ...best.slot };
+}
+
 // 채널 목록 화면에 "오늘 슬롯 몇 개 중 몇 개 남았는지" 보여주기 위한 집계.
 // 반환: { 정보성: { total, remaining }, 광고용: { total, remaining } }
 async function getTodaySlotSummary(pool, channelId) {
@@ -92,4 +115,4 @@ async function getTodaySlotSummary(pool, channelId) {
   return summary;
 }
 
-module.exports = { getNextAvailableSlot, getTodaySlotSummary };
+module.exports = { getNextAvailableSlot, getNextAvailableSlotAnyChannel, getTodaySlotSummary };

@@ -71,6 +71,23 @@ function requireAdmin(req, res, next) {
   res.redirect('/login');
 }
 
+// 확장 프로그램처럼 쿠키 세션이 없는 프로그램 호출용 인증 — 대시보드 로그인과 같은
+// ADMIN_PASSWORD를 헤더로 보내게 한다(별도 API 키를 새로 발급/관리할 필요 없게).
+// /login과 같은 비밀번호를 쓰므로, 무차별 대입 방지도 같은 걸 그대로 적용한다.
+function requireAdminApi(req, res, next) {
+  const remainingLockMs = checkLoginLockout(req.ip);
+  if (remainingLockMs > 0) {
+    return res.status(429).json({ error: `시도가 너무 많습니다. ${Math.ceil(remainingLockMs / 60000)}분 후 다시 시도해주세요.` });
+  }
+  const password = req.get('X-Admin-Password') || '';
+  if (password && safeCompare(password, env.ADMIN_PASSWORD)) {
+    loginAttempts.delete(req.ip);
+    return next();
+  }
+  recordFailedLogin(req.ip);
+  res.status(401).json({ error: '인증 실패 — X-Admin-Password 헤더를 확인해주세요.' });
+}
+
 app.get('/', (req, res) => res.send(views.landing()));
 
 app.get('/login', (req, res) => res.send(views.adminLogin()));
@@ -156,6 +173,55 @@ app.get('/channels/:id/next-slot', requireAdmin, async (req, res) => {
   const next = await slots.getNextAvailableSlot(pool, req.params.id, tag);
   if (!next) return res.status(404).json({ error: '이 채널에 등록된 빈 슬롯을 찾지 못했습니다. 설정을 확인해주세요.' });
   res.json(next);
+});
+
+// 확장 프로그램이 준비한 게시물 하나를 넘기면, 연결된 모든 채널을 통틀어 가장 먼저 비는
+// 슬롯(그 태그 기준)에 자동 배정해서 예약한다 — 어느 채널로 갈지는 이 서버가 정하고,
+// 확장 프로그램은 이 호출을 준비된 개수만큼 순서대로(동시에 X) 반복하기만 하면 된다.
+app.post('/api/schedule', requireAdminApi, upload.fields([{ name: 'mediaFiles', maxCount: 20 }]), async (req, res) => {
+  const { text, replyText, tag } = req.body;
+  if (!['정보성', '광고용'].includes(tag)) return res.status(400).json({ error: '태그(정보성/광고용)가 올바르지 않습니다.' });
+  if (!text || !text.trim()) return res.status(400).json({ error: '본문이 비어있습니다.' });
+
+  const assignment = await slots.getNextAvailableSlotAnyChannel(pool, tag);
+  if (!assignment) {
+    return res
+      .status(409)
+      .json({ error: `이 태그(${tag})로 배정할 빈 슬롯이 없습니다 — 채널 슬롯 설정 또는 오늘 준비 개수를 확인해주세요.` });
+  }
+
+  const { rows: channelRows } = await pool.query('SELECT * FROM channels WHERE id = $1', [assignment.channelId]);
+  const channel = channelRows[0];
+
+  const files = req.files?.mediaFiles || [];
+  if (files.length > 20) return res.status(400).json({ error: '미디어는 최대 20개까지만 첨부할 수 있습니다.' });
+  let media;
+  try {
+    media = await Promise.all(
+      files.map(async (file) => ({
+        type: file.mimetype.startsWith('video/') ? 'video' : 'image',
+        url: await storage.uploadFile(env, file.buffer, file.mimetype),
+      }))
+    );
+  } catch (e) {
+    return res.status(500).json({ error: `미디어 업로드 실패: ${e.message}` });
+  }
+
+  const scheduledAt = parseKstDatetimeLocal(`${assignment.dateStr}T${assignment.hour}:${assignment.minute}`);
+  const { rows: inserted } = await pool.query(
+    `INSERT INTO scheduled_posts (channel_id, text, media, reply_text, scheduled_at, tag)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    [channel.id, text, JSON.stringify(media), replyText || null, scheduledAt, tag]
+  );
+
+  res.json({
+    postId: inserted[0].id,
+    channelUsername: channel.username,
+    scheduledAt: scheduledAt.toISOString(),
+    dateStr: assignment.dateStr,
+    hour: assignment.hour,
+    minute: assignment.minute,
+  });
 });
 
 // 연결 해제: 행을 지우면(ON DELETE CASCADE) 발행 내역까지 같이 사라지므로, 대신
