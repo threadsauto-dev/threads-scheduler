@@ -146,14 +146,16 @@ app.get('/channels/connect', requireAdmin, (req, res) => {
 });
 
 app.post('/channels/:id/slots', requireAdmin, async (req, res) => {
-  const { slotTime, slotType } = req.body;
+  const { slotTime, slotType, slotDate } = req.body;
   if (!slotTime || !['정보성', '광고용'].includes(slotType)) {
     return res.status(400).send(views.errorPage('슬롯 시간/유형이 올바르지 않습니다.'));
   }
-  await pool.query(`INSERT INTO channel_slots (channel_id, slot_time, slot_type) VALUES ($1, $2, $3)`, [
+  // slotDate가 비어있으면 매일 반복되는 슬롯(NULL), 채워져 있으면 그 날짜 하루만 적용.
+  await pool.query(`INSERT INTO channel_slots (channel_id, slot_time, slot_type, slot_date) VALUES ($1, $2, $3, $4)`, [
     req.params.id,
     slotTime,
     slotType,
+    slotDate || null,
   ]);
   res.redirect('/channels');
 });

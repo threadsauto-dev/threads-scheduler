@@ -104,6 +104,9 @@ async function migrate() {
   // 어느 슬롯에서 나온 예약인지 기록 — 정보성/광고성 구분을 발행 내역에서도 볼 수 있고,
   // "이 슬롯 이미 오늘 채워졌는지" 점유 여부를 계산할 때도 씀.
   await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS tag TEXT;`);
+  // NULL이면 매일 반복되는 슬롯(기존 동작), 날짜가 있으면 그 날짜에만 적용되는 1회성 슬롯
+  // — 사람마다 특정 날짜에만 필요한 예외적인 시간대가 있을 수 있다는 요청으로 추가(2026-08-15).
+  await pool.query(`ALTER TABLE channel_slots ADD COLUMN IF NOT EXISTS slot_date DATE;`);
 }
 
 module.exports = { pool, migrate };

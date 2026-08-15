@@ -14,16 +14,35 @@ function toKstParts(date) {
   };
 }
 
+// pg는 DATE 컬럼을 "그 값을 서버 로컬 타임존의 자정으로 해석한 Date"로 돌려준다(UTC 자정이
+// 아님) — 그래서 이 값을 문자열로 되돌릴 땐 반드시 로컬 getter를 써야 한다. toISOString()을
+// 쓰면 서버 로컬 타임존이 UTC가 아닐 때(예: KST) 하루가 밀리는 버그가 생긴다(실제로 겪음).
+function pgDateToStr(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 // 특정 채널·태그의 다음 빈 슬롯을 찾아 { dateStr, hour, minute }(KST)로 돌려준다.
 // fromDateStr("YYYY-MM-DD")을 주면 오늘이 아니라 그 날짜부터 검색을 시작한다(미리 준비해둔
 // 콘텐츠를 특정 날짜부터 배치하고 싶을 때). 생략하면 지금(오늘)부터.
 // 슬롯이 하나도 등록 안 됐거나(설정 안 함) 검색 기간 안에 빈 슬롯이 없으면 null.
 async function getNextAvailableSlot(pool, channelId, tag, fromDateStr) {
-  const { rows: slots } = await pool.query(
-    `SELECT slot_time FROM channel_slots WHERE channel_id = $1 AND slot_type = $2 ORDER BY slot_time`,
+  const { rows: allSlots } = await pool.query(
+    `SELECT slot_time, slot_date FROM channel_slots WHERE channel_id = $1 AND slot_type = $2 ORDER BY slot_time`,
     [channelId, tag]
   );
-  if (slots.length === 0) return null;
+  if (allSlots.length === 0) return null;
+  // slot_date가 NULL이면 매일 반복, 있으면 그 날짜 하루만 적용되는 1회성 슬롯
+  const recurringSlots = allSlots.filter((s) => !s.slot_date);
+  const datedSlotsByDate = new Map(); // "YYYY-MM-DD" -> [슬롯,...]
+  for (const s of allSlots) {
+    if (!s.slot_date) continue;
+    const d = pgDateToStr(s.slot_date);
+    if (!datedSlotsByDate.has(d)) datedSlotsByDate.set(d, []);
+    datedSlotsByDate.get(d).push(s);
+  }
 
   const { rows: existing } = await pool.query(
     `SELECT scheduled_at FROM scheduled_posts
@@ -42,8 +61,11 @@ async function getNextAvailableSlot(pool, channelId, tag, fromDateStr) {
 
   for (let dayOffset = 0; dayOffset < SEARCH_DAYS; dayOffset++) {
     const dateStr = new Date(todayStartKst.getTime() + dayOffset * DAY_MS).toISOString().slice(0, 10);
+    const daySlots = [...recurringSlots, ...(datedSlotsByDate.get(dateStr) || [])].sort((a, b) =>
+      a.slot_time < b.slot_time ? -1 : a.slot_time > b.slot_time ? 1 : 0
+    );
 
-    for (const slot of slots) {
+    for (const slot of daySlots) {
       const [h, m] = slot.slot_time.slice(0, 5).split(':').map(Number);
       const minutesOfDay = h * 60 + m;
       const candidateMs = Date.parse(`${dateStr}T00:00:00+09:00`) + minutesOfDay * 60000;
@@ -96,8 +118,10 @@ async function getNextAvailableSlotAnyChannel(pool, tag, fromDateStr) {
 // 채널 목록 화면에 "오늘 슬롯 몇 개 중 몇 개 남았는지" 보여주기 위한 집계.
 // 반환: { 정보성: { total, remaining }, 광고용: { total, remaining } }
 async function getTodaySlotSummary(pool, channelId) {
+  // 오늘 적용되는 슬롯 = 매일 반복(slot_date IS NULL) + 오늘 날짜로 지정된 1회성 슬롯
   const { rows: slots } = await pool.query(
-    `SELECT slot_time, slot_type FROM channel_slots WHERE channel_id = $1`,
+    `SELECT slot_time, slot_type FROM channel_slots
+     WHERE channel_id = $1 AND (slot_date IS NULL OR slot_date = (now() AT TIME ZONE 'Asia/Seoul')::date)`,
     [channelId]
   );
   const { rows: existing } = await pool.query(

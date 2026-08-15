@@ -137,23 +137,34 @@ const channelSlotBox = (c) => {
         ? '<p style="font-size:13px; color:#999; margin:4px 0 10px;">등록된 시간대가 없습니다.</p>'
         : `<div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px;">
       ${c.slots
-        .map(
-          (s) => `<form method="post" action="/channels/${c.id}/slots/${s.id}/delete" style="margin:0;" onsubmit="return confirm('${s.slot_time.slice(0, 5)} ${s.slot_type} 슬롯을 삭제할까요?');">
+        .map((s) => {
+          // pg가 DATE를 서버 로컬 타임존 자정으로 돌려주므로 toISOString() 대신 로컬 getter를 써야
+          // 타임존에 따라 하루 밀리는 걸 피할 수 있다(slots.js의 pgDateToStr와 같은 이유).
+          const dateLabel = s.slot_date
+            ? `${String(new Date(s.slot_date).getMonth() + 1).padStart(2, '0')}/${String(new Date(s.slot_date).getDate()).padStart(2, '0')} `
+            : '';
+          const confirmLabel = `${dateLabel}${s.slot_time.slice(0, 5)} ${s.slot_type}`;
+          return `<form method="post" action="/channels/${c.id}/slots/${s.id}/delete" style="margin:0;" onsubmit="return confirm('${confirmLabel} 슬롯을 삭제할까요?');">
         <button type="submit" style="font-size:12px; padding:4px 8px; border-radius:999px; border:1px solid #ddd; background:${s.slot_type === '정보성' ? '#eef4ff' : '#fff4e5'}; color:#333; cursor:pointer;">
-          ${s.slot_time.slice(0, 5)} ${s.slot_type} ✕
+          ${confirmLabel}${s.slot_date ? ' 📌' : ''} ✕
         </button>
-      </form>`
-        )
+      </form>`;
+        })
         .join('')}
     </div>`
     }
-    <form method="post" action="/channels/${c.id}/slots" style="display:flex; gap:8px; align-items:center; margin:0;">
+    <form method="post" action="/channels/${c.id}/slots" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:0;">
       <input type="time" name="slotTime" required style="width:auto; margin:0;" />
       <select name="slotType" required style="width:auto; margin:0;">
         ${SLOT_TYPES.map((t) => `<option value="${t}">${t}</option>`).join('')}
       </select>
+      <label style="font-weight:400; font-size:12px; color:#888; display:flex; align-items:center; gap:4px;">
+        특정 날짜만(선택)
+        <input type="date" name="slotDate" style="width:auto; margin:0;" />
+      </label>
       <button type="submit" style="padding:8px 14px; font-size:13px;">+ 시간대 추가</button>
     </form>
+    <p style="font-size:12px; color:#999; margin:6px 0 0;">날짜를 비워두면 매일 반복, 채우면 그 날짜에만 적용되는 1회성 슬롯(📌)이 됩니다.</p>
   </div>`;
 };
 
