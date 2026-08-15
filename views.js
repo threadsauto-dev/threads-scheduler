@@ -139,7 +139,7 @@ const channelSlotBox = (c) => {
       ${c.slots
         .map(
           (s) => `<form method="post" action="/channels/${c.id}/slots/${s.id}/delete" style="margin:0;" onsubmit="return confirm('${s.slot_time.slice(0, 5)} ${s.slot_type} 슬롯을 삭제할까요?');">
-        <button type="submit" style="font-size:12px; padding:4px 8px; border-radius:999px; border:1px solid #ddd; background:${s.slot_type === '정보성' ? '#eef4ff' : '#fff4e5'}; cursor:pointer;">
+        <button type="submit" style="font-size:12px; padding:4px 8px; border-radius:999px; border:1px solid #ddd; background:${s.slot_type === '정보성' ? '#eef4ff' : '#fff4e5'}; color:#333; cursor:pointer;">
           ${s.slot_time.slice(0, 5)} ${s.slot_type} ✕
         </button>
       </form>`
