@@ -133,19 +133,38 @@ async function createContainer(userId, accessToken, params) {
   return container.id;
 }
 
+// code 24 / subcode 4279009 ("Media Not Found" — "The media with id ... cannot be found.")는
+// 방금 status=FINISHED로 확인한 컨테이너를 바로 이어서 publish할 때 Threads 쪽 전파 지연으로
+// 가끔 발생하는 것으로 보인다(2026-08-15~16 사이 서로 다른 채널·본문/댓글 양쪽에서 여러 번
+// 재현됨). 다른 publish 실패와 달리 이건 "응답 유실로 애매한" 경우가 아니라 Threads가 "이
+// 컨테이너를 못 찾았다"고 명확히 답한 것 — 즉 이 시도는 확실히 발행되지 않았다는 뜻이라
+// 중복 게시 위험 없이 안전하게 재시도할 수 있다.
+function isTransientMediaNotFoundError(err) {
+  const msg = err.message || '';
+  return /"code":\s*24\b/.test(msg) && /"error_subcode":\s*4279009\b/.test(msg);
+}
+
 async function publishContainer(userId, accessToken, creationId) {
-  try {
-    const published = await call(
-      `/${userId}/threads_publish`,
-      { creation_id: creationId, access_token: accessToken },
-      'POST'
-    );
-    return published.id;
-  } catch (e) {
-    // 실제로 콘텐츠를 라이브로 올리는 호출이다. 응답을 못 받아도 요청은 이미 Threads
-    // 서버에 반영됐을 수 있어, 이 표시가 있으면 호출부는 절대 자동 재시도하면 안 된다.
-    e.isPublishCall = true;
-    throw e;
+  const MAX_ATTEMPTS = 3;
+  const RETRY_DELAY_MS = 4000;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const published = await call(
+        `/${userId}/threads_publish`,
+        { creation_id: creationId, access_token: accessToken },
+        'POST'
+      );
+      return published.id;
+    } catch (e) {
+      if (isTransientMediaNotFoundError(e) && attempt < MAX_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        continue;
+      }
+      // 실제로 콘텐츠를 라이브로 올리는 호출이다. 응답을 못 받아도 요청은 이미 Threads
+      // 서버에 반영됐을 수 있어, 이 표시가 있으면 호출부는 절대 자동 재시도하면 안 된다.
+      e.isPublishCall = true;
+      throw e;
+    }
   }
 }
 
