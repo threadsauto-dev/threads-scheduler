@@ -602,6 +602,37 @@ function hourCellClass(hour) {
   return '';
 }
 
+// 최근 N일 채널별 조회수를 작은 꺾은선 그래프로 그린다. 축 눈금이나 값 라벨 없이
+// 흐름만 보여주는 용도라, 날짜는 첫날/마지막날만 표기해 복잡해지지 않게 한다.
+function trendSparkline(trend) {
+  if (!trend || trend.length === 0) return '';
+  const width = 260;
+  const height = 40;
+  const padX = 4;
+  const max = Math.max(1, ...trend.map((t) => t.views));
+  const stepX = trend.length > 1 ? (width - padX * 2) / (trend.length - 1) : 0;
+  const points = trend
+    .map((t, i) => {
+      const x = padX + stepX * i;
+      const y = height - 4 - (t.views / max) * (height - 10);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(' ');
+  // date는 'YYYY-MM-DD' 문자열 그대로 받는다 — Date 객체로 파싱하면 pg 드라이버가
+  // 서버 로컬 타임존을 끼워 넣어 날짜가 하루 밀려 보이는 문제가 실제로 있었다(직접 확인함).
+  const fmtDate = (dateStr) => {
+    const [, m, d] = dateStr.split('-');
+    return `${Number(m)}/${Number(d)}`;
+  };
+  return `
+    <div class="stat-label" style="margin-top:14px;">최근 ${trend.length}일 조회수 추이</div>
+    <svg viewBox="0 0 ${width} ${height + 14}" width="100%" height="${height + 14}" style="display:block;">
+      <polyline fill="none" stroke="#2563eb" stroke-width="2" points="${points}" />
+      <text x="${padX}" y="${height + 12}" font-size="10" fill="#999">${fmtDate(trend[0].date)}</text>
+      <text x="${width - padX}" y="${height + 12}" font-size="10" fill="#999" text-anchor="end">${fmtDate(trend[trend.length - 1].date)}</text>
+    </svg>`;
+}
+
 const reportDashboard = (channels) => layout('리포트', `
   ${nav()}
   <h1>오늘의 리포트</h1>
@@ -635,6 +666,7 @@ const reportDashboard = (channels) => layout('리포트', `
             )
             .join('')}
         </div>
+        ${trendSparkline(ch.trend)}
       </div>`
         )
         .join('') || '<p>연결된 채널이 없습니다.</p>'

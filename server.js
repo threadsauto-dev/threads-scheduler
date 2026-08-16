@@ -483,8 +483,49 @@ app.get('/report', requireAdmin, async (req, res) => {
   const { rows: allChannels } = await pool.query(
     'SELECT id, username FROM channels WHERE disconnected_at IS NULL ORDER BY created_at'
   );
+
+  // 최근 10일(어제까지, 오늘 제외) 채널별 일별 조회수 추이. 오늘은 아직 48시간 갱신
+  // 창 안이라 계속 오르는 중이라 그래프에 넣으면 매번 끝이 뚝 떨어진 것처럼 보여서 뺀다.
+  // generate_series로 날짜를 먼저 다 만들어두고 LEFT JOIN해서, 글이 없던 날도 0으로
+  // 채워진 채 10개가 항상 나오게 한다(SQL에서 빈 날짜를 채우는 게 JS 날짜 계산보다
+  // 타임존 실수 여지가 적다). scheduled_at(예약 시각)이 아니라 terminal_at(실제 발행
+  // 확정 시각) 기준으로 묶는다 — 재시도로 밀린 글이 엉뚱한 날짜에 잡히지 않게.
+  const TREND_DAYS = 10;
+  const { rows: trendRows } = await pool.query(
+    `
+    WITH days AS (
+      SELECT generate_series(
+        (now() AT TIME ZONE 'Asia/Seoul')::date - $1::int,
+        (now() AT TIME ZONE 'Asia/Seoul')::date - 1,
+        interval '1 day'
+      )::date AS day
+    ),
+    daily AS (
+      SELECT sp.channel_id,
+        (sp.terminal_at AT TIME ZONE 'Asia/Seoul')::date AS day,
+        COALESCE(sum(sp.views), 0)::int AS views_sum
+      FROM scheduled_posts sp
+      WHERE sp.status = 'published'
+      GROUP BY sp.channel_id, day
+    )
+    SELECT c.id AS channel_id, days.day::text AS day, COALESCE(daily.views_sum, 0)::int AS views_sum
+    FROM channels c
+    CROSS JOIN days
+    LEFT JOIN daily ON daily.channel_id = c.id AND daily.day = days.day
+    WHERE c.disconnected_at IS NULL
+    ORDER BY c.id, days.day
+  `,
+    [TREND_DAYS]
+  );
+  const trendByChannel = new Map();
+  for (const row of trendRows) {
+    if (!trendByChannel.has(row.channel_id)) trendByChannel.set(row.channel_id, []);
+    trendByChannel.get(row.channel_id).push({ date: row.day, views: row.views_sum });
+  }
+
   const channels = allChannels.map((c) => ({
     username: c.username,
+    trend: trendByChannel.get(c.id) || [],
     ...(channelsById.get(c.id) || {
       publishedCount: 0,
       pendingCount: 0,
