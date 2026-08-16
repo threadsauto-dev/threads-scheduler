@@ -633,26 +633,32 @@ function trendSparkline(trend) {
     </svg>`;
 }
 
-const reportDashboard = (channels) => layout('리포트', `
+const reportDashboard = (channels, { reportDate, prevDate, nextDate } = {}) => layout('리포트', `
   ${nav()}
-  <h1>오늘의 리포트</h1>
-  <p style="color:#888; font-size:13px; margin-top:-8px;">${formatKst(new Date()).split(/오전|오후/)[0].trim()} 기준 · 조회수는 발행 후 48시간 동안 20분마다 갱신됩니다.</p>
+  <h1>리포트</h1>
+  <div style="display:flex; align-items:center; gap:8px; margin:8px 0 4px;">
+    <a href="/report?date=${prevDate}" style="text-decoration:none; font-size:16px; color:#555; padding:2px 6px;">◀</a>
+    <input type="date" value="${reportDate}" onchange="location.href='/report?date=' + this.value"
+      style="padding:5px 8px; border-radius:6px; border:1px solid #ccc; font-size:13px; font-family:inherit;" />
+    <a href="/report?date=${nextDate}" style="text-decoration:none; font-size:16px; color:#555; padding:2px 6px;">▶</a>
+  </div>
+  <p style="color:#888; font-size:13px; margin-top:0;">조회수는 발행 후 48시간 동안 20분마다 갱신됩니다.</p>
   <div class="report-grid">
     ${
       channels
         .map(
           (ch) => `<div class="report-card">
         <h3>@${ch.username}</h3>
-        <div class="stat-label">오늘 올린 글 조회수</div>
+        <div class="stat-label">올린 글 조회수</div>
         <div class="stat-value blue">${formatNumber(ch.totalViews)}</div>
         <div class="stat-sub">${ch.publishedCount}개 글 합계 · ${ch.viewsConfirmed}/${ch.publishedCount}개 확인됨</div>
         <div class="stat-row">
           <div>
-            <div class="stat-label">오늘 발행 완료</div>
+            <div class="stat-label">발행 완료</div>
             <div class="stat-value green">${ch.publishedCount}</div>
           </div>
           <div>
-            <div class="stat-label">오늘 발행 예정</div>
+            <div class="stat-label">발행 예정</div>
             <div class="stat-value orange">${ch.pendingCount}</div>
           </div>
         </div>

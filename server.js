@@ -434,9 +434,24 @@ app.get('/posts', requireAdmin, async (req, res) => {
 });
 
 app.get('/report', requireAdmin, async (req, res) => {
+  // ?date=2026-08-16 처럼 과거(혹은 미래) 날짜를 골라볼 수 있게 — 없거나 형식이 이상하면
+  // 오늘(KST)로 대체한다. "오늘"도 JS Date로 계산하면 로컬 타임존이 끼어들 수 있어(직접
+  // 겪은 문제) 전부 Postgres 쪽에서 문자열로 계산해 받는다.
+  const dateParam = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : null;
+  const {
+    rows: [{ resolved_date: reportDate, prev_date: prevDate, next_date: nextDate }],
+  } = await pool.query(
+    `SELECT
+      COALESCE($1::date, (now() AT TIME ZONE 'Asia/Seoul')::date)::text AS resolved_date,
+      (COALESCE($1::date, (now() AT TIME ZONE 'Asia/Seoul')::date) - 1)::text AS prev_date,
+      (COALESCE($1::date, (now() AT TIME ZONE 'Asia/Seoul')::date) + 1)::text AS next_date`,
+    [dateParam]
+  );
+
   // 시간(KST) × 상태별로 묶어서 가져온 뒤 채널별로 합산한다 — 하루 24시간 × 채널 몇 개 ×
   // 상태 몇 가지라 행 수가 적어서 집계는 JS에서 하는 게 SQL보다 이해하기 쉽다.
-  const { rows } = await pool.query(`
+  const { rows } = await pool.query(
+    `
     SELECT c.id AS channel_id, c.username,
       EXTRACT(HOUR FROM (sp.scheduled_at AT TIME ZONE 'Asia/Seoul'))::int AS hour,
       sp.status,
@@ -445,11 +460,13 @@ app.get('/report', requireAdmin, async (req, res) => {
       count(*) FILTER (WHERE sp.views IS NOT NULL)::int AS views_confirmed_cnt
     FROM scheduled_posts sp
     JOIN channels c ON c.id = sp.channel_id
-    WHERE (sp.scheduled_at AT TIME ZONE 'Asia/Seoul')::date = (now() AT TIME ZONE 'Asia/Seoul')::date
+    WHERE (sp.scheduled_at AT TIME ZONE 'Asia/Seoul')::date = $1::date
       AND c.disconnected_at IS NULL
     GROUP BY c.id, c.username, hour, sp.status
     ORDER BY c.id, hour
-  `);
+  `,
+    [reportDate]
+  );
 
   const channelsById = new Map();
   for (const row of rows) {
@@ -535,7 +552,7 @@ app.get('/report', requireAdmin, async (req, res) => {
     }),
   }));
 
-  res.send(views.reportDashboard(channels));
+  res.send(views.reportDashboard(channels, { reportDate, prevDate, nextDate }));
 });
 
 app.get('/privacy', (req, res) => res.send(views.privacy()));
