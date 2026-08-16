@@ -87,6 +87,17 @@ async function refreshExpiringTokens() {
       console.log(`[토큰 갱신 완료] @${channel.username}`);
     } catch (e) {
       console.error(`[토큰 갱신 실패] @${channel.username}: ${e.message}`);
+      // 서버 로그는 사용자가 들여다볼 이유가 없으니, 여기서 조용히 실패하면 만료 10일의
+      // 유예 기간을 그냥 흘려보내다 실제로 토큰이 죽어야만(그때는 이미 게시 실패) 알게 된다.
+      // /channels 배너로 미리 띄워서, 만료되기 전에 재연결할 여유를 준다.
+      const daysLeft = Math.max(0, Math.ceil((new Date(channel.token_expires_at) - Date.now()) / 86400000));
+      const reason = publisher.channelLevelErrorReason(e);
+      await publisher.flagChannelForReconnect(
+        channel.id,
+        reason
+          ? `${reason}: ${e.message}`
+          : `토큰 자동 갱신 실패(만료까지 약 ${daysLeft}일 남음, 계속 실패하면 게시가 중단됩니다) — 채널을 재연결해주세요: ${e.message}`
+      );
     }
   }
 }
