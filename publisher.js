@@ -11,20 +11,25 @@ function isRetryableError(err) {
   return !/^\[.+\] \{/.test(err.message || '');
 }
 
-// Meta 에러 code 10 = 권한 부족("Application does not have permission for this action").
-// 이건 이 게시물 하나만의 문제가 아니라 그 채널 토큰에 특정 스코프가 통째로 없다는
-// 신호라, 재시도해도 절대 성공하지 않는다 — 채널 재연결이 필요하다는 걸 바로 알 수 있게
-// /channels 화면에 눈에 띄게 남긴다. (OAuth 스코프 누락으로 댓글이 조용히 계속 실패했던
-// 사고를 겪고 2026-08-14에 추가 — 다시는 /posts 한 줄에 묻혀서 뒤늦게 발견되지 않도록.)
-function isPermissionError(err) {
-  return /"code":\s*10\b/.test(err.message || '');
+// Meta 에러 code 10 = 권한 부족(스코프 누락), code 190 = 액세스 토큰 무효화(재로그인/비밀번호
+// 변경 등으로 토큰이 죽음), code 200 = 계정 자체가 API 접근을 차단당함(제재·보안 checkpoint —
+// 2026-08-15에 실제로 겪은 사고, project_threads-meta-account-checkpoint-incident 참고).
+// 셋 다 이 게시물 하나만의 문제가 아니라 채널(계정) 전체가 막혔다는 신호라 재시도해도 절대
+// 성공하지 않는다 — 어떤 조치가 필요한지(재연결 vs Meta 콘솔에서 계정 상태 확인) 바로 알 수
+// 있게 코드별로 원인을 구분해 남긴다. (OAuth 스코프 누락으로 댓글이 조용히 계속 실패했던 사고를
+// 겪고 2026-08-14에 code 10 감지를 추가했고, 2026-08-16에 190/200까지 넓혔다.)
+function channelLevelErrorReason(err) {
+  const msg = err.message || '';
+  if (/"code":\s*10\b/.test(msg)) return '권한 부족(스코프 누락) — 채널 재연결 필요';
+  if (/"code":\s*190\b/.test(msg)) return '액세스 토큰 무효화 — 채널 재연결 필요';
+  if (/"code":\s*200\b/.test(msg)) return 'Meta가 API 접근 차단 — 계정 제재/보안 확인 여부를 Meta에서 직접 확인 필요';
+  return null;
 }
 
-async function flagChannelForReconnect(channelId, message) {
-  await pool.query(
-    `UPDATE channels SET reconnect_reason = $1 WHERE id = $2`,
-    [`권한 부족으로 실패 — 채널을 재연결해주세요: ${message}`, channelId]
-  );
+// /channels 화면에 눈에 띄게 남긴다 — /posts 한 줄에 에러 메시지가 묻혀서 뒤늦게
+// 발견되지 않도록, 어떤 채널이 왜 막혔는지 채널 목록 자체에서 바로 보이게 한다.
+async function flagChannelForReconnect(channelId, reason) {
+  await pool.query(`UPDATE channels SET reconnect_reason = $1 WHERE id = $2`, [reason, channelId]);
 }
 
 // scheduled_posts 한 건의 "본문"을 실제로 발행하고 상태를 갱신한다.
@@ -55,7 +60,10 @@ async function publishOne(post, channel) {
     return { postId };
   } catch (e) {
     const retryCount = (post.retry_count || 0) + 1;
-    if (isPermissionError(e)) await flagChannelForReconnect(channel.id, e.message);
+    const channelReason = channelLevelErrorReason(e);
+    if (channelReason) await flagChannelForReconnect(channel.id, `${channelReason}: ${e.message}`);
+    // 채널 레벨 문제면 이 글만의 문제가 아니라는 걸 /posts 목록에서도 바로 알 수 있게 접두어를 남긴다.
+    const prefix = channelReason ? `[⚠ 채널 문제로 보임 — ${channelReason}] ` : '';
 
     if (e.isPublishCall) {
       // 본문을 실제로 게시하는 호출 자체가 실패 — 응답을 못 받았어도 요청은 이미
@@ -63,7 +71,7 @@ async function publishOne(post, channel) {
       // 무조건 즉시 'failed'로 남기고, 사람이 Threads에서 직접 확인하게 한다.
       await pool.query(
         `UPDATE scheduled_posts SET status = 'failed', retry_count = $1, error_message = $2, terminal_at = now() WHERE id = $3`,
-        [retryCount, `[Threads에서 실제 게시 여부 직접 확인 필요] ${e.message}`, post.id]
+        [retryCount, `${prefix}[Threads에서 실제 게시 여부 직접 확인 필요] ${e.message}`, post.id]
       );
     } else {
       // 아직 라이브로 올라가기 전 단계(컨테이너 준비)에서 실패 — 중복 위험이 없어 안전하게 재시도 가능.
@@ -73,7 +81,7 @@ async function publishOne(post, channel) {
         `UPDATE scheduled_posts SET status = $1, retry_count = $2, error_message = $3,
          terminal_at = CASE WHEN $1 = 'failed' THEN now() ELSE terminal_at END
          WHERE id = $4`,
-        [willRetry ? 'pending' : 'failed', retryCount, e.message, post.id]
+        [willRetry ? 'pending' : 'failed', retryCount, `${prefix}${e.message}`, post.id]
       );
     }
     throw e;
@@ -111,7 +119,9 @@ async function publishCommentOne(post, channel) {
       [replyId, post.id]
     );
   } catch (e) {
-    if (isPermissionError(e)) await flagChannelForReconnect(channel.id, e.message);
+    const channelReason = channelLevelErrorReason(e);
+    if (channelReason) await flagChannelForReconnect(channel.id, `${channelReason}: ${e.message}`);
+    const prefix = channelReason ? `[⚠ 채널 문제로 보임 — ${channelReason}] ` : '';
     const retryCount = (post.comment_retry_count || 0) + 1;
     if (isRetryableError(e) && retryCount <= COMMENT_BACKOFF_MINUTES.length) {
       // 원인이 애매한 실패(네트워크 순간 끊김, 전파 지연 등) — 다음 확인 전에 이미
@@ -121,7 +131,7 @@ async function publishCommentOne(post, channel) {
         `UPDATE scheduled_posts SET comment_status = 'pending',
          comment_due_at = now() + ($1 || ' minutes')::interval, comment_retry_count = $2, comment_error_message = $3
          WHERE id = $4`,
-        [delayMin, retryCount, e.message, post.id]
+        [delayMin, retryCount, `${prefix}${e.message}`, post.id]
       );
     } else {
       // Threads가 내용 자체를 명확히 거부했거나(재시도로 해결 안 됨), 애매한 실패였지만
@@ -129,10 +139,10 @@ async function publishCommentOne(post, channel) {
       // 오류 원문을 보고 직접 판단(링크 수정, 수동 댓글 등)해야 한다.
       await pool.query(
         `UPDATE scheduled_posts SET comment_status = 'needs_review', comment_retry_count = $1, comment_error_message = $2 WHERE id = $3`,
-        [retryCount, e.message, post.id]
+        [retryCount, `${prefix}${e.message}`, post.id]
       );
     }
   }
 }
 
-module.exports = { publishOne, publishCommentOne, isPermissionError, flagChannelForReconnect };
+module.exports = { publishOne, publishCommentOne, channelLevelErrorReason, flagChannelForReconnect };

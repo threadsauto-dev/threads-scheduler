@@ -62,7 +62,8 @@ async function refreshViews() {
         post.id,
       ]);
     } catch (e) {
-      if (publisher.isPermissionError(e)) await publisher.flagChannelForReconnect(post.channel_id, e.message);
+      const channelReason = publisher.channelLevelErrorReason(e);
+      if (channelReason) await publisher.flagChannelForReconnect(post.channel_id, `${channelReason}: ${e.message}`);
       // 실패해도 시각은 찍어둔다 — 안 찍으면 이 글만 다음 크론(1분 뒤)에 계속 재시도돼
       // 다른 글들과 주기가 어긋나고 API만 두들기게 된다. 다음 20분 주기에 같이 재시도된다.
       await pool.query(`UPDATE scheduled_posts SET insights_updated_at = now() WHERE id = $1`, [post.id]);
