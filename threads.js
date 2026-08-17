@@ -127,10 +127,32 @@ async function waitUntilFinished(creationId, accessToken) {
   throw new Error('미디어 처리 대기 시간 초과 (100초)');
 }
 
+// waitUntilFinished()가 status:'ERROR'로 던지는 에러 중 error_message가 그냥 "UNKNOWN"(code/
+// error_subcode 없음)인 경우는 콘텐츠 자체가 거부된 게 아니라 Threads 쪽 일시적 처리 실패로
+// 보인다(2026-08-17 실제 사례 — 같은 스펙(코덱/컨테이너)의 다른 영상들은 같은 파이프라인으로
+// 문제없이 통과했음, 파일 문제가 아니었음이 ffprobe로 확인됨). threads_publish 호출 전
+// 단계라 재시도해도 중복 게시 위험이 없다.
+function isTransientContainerError(err) {
+  const msg = err.message || '';
+  return /^\[미디어 처리 실패\]/.test(msg) && /"error_message":\s*"UNKNOWN"/.test(msg);
+}
+
 async function createContainer(userId, accessToken, params) {
-  const container = await call(`/${userId}/threads`, { ...params, access_token: accessToken }, 'POST');
-  await waitUntilFinished(container.id, accessToken);
-  return container.id;
+  const MAX_ATTEMPTS = 3;
+  const RETRY_DELAY_MS = 4000;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const container = await call(`/${userId}/threads`, { ...params, access_token: accessToken }, 'POST');
+      await waitUntilFinished(container.id, accessToken);
+      return container.id;
+    } catch (e) {
+      if (isTransientContainerError(e) && attempt < MAX_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        continue;
+      }
+      throw e;
+    }
+  }
 }
 
 // code 24 / subcode 4279009 ("Media Not Found" — "The media with id ... cannot be found.")는
