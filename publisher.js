@@ -3,12 +3,19 @@ const { pool } = require('./db');
 
 const MAX_RETRIES = 3;
 
-// threads.js의 call()은 Threads가 준 구조화된 에러 JSON을 성공적으로 파싱했을 때만
-// "[path] {...}" 형태로 던진다 — 즉 Threads가 내용 자체를 명확히 거부한 경우라 재시도해도
-// 똑같이 실패한다. 그 외(JSON 파싱 실패, fetch 자체 실패 등)는 네트워크 순간 끊김 같은
-// 일시적 문제일 가능성이 높아 재시도해볼 가치가 있다.
+// 예전엔 "구조화된 JSON 에러 = Threads가 내용을 명확히 거부한 것 = 재시도 금지"라는
+// 화이트리스트 방식이었다. 그런데 code 24(Media Not Found)나 error_message:"UNKNOWN"처럼
+// 겉보기엔 "명확한 거부"로 보이지만 실제로는 Threads 쪽 일시적 처리 문제인 경우가 반복
+// 발견됐다(2026-08-16/17) — 알게 될 때마다 코드/서브코드 하나씩 예외를 추가하는 방식으론
+// 앞으로 아직 못 본 새 에러가 나올 때마다 똑같은 일을 반복하게 된다.
+// 그래서 블랙리스트 방식으로 뒤집는다: 이 함수는 발행(threads_publish) 이전 단계
+// (컨테이너 준비)에서만 쓰이므로 재시도해도 중복 게시 위험이 전혀 없다 — 채널(계정) 전체가
+// 막혀서 재시도해도 절대 성공할 수 없다고 "확실히" 아는 경우(channelLevelErrorReason)만
+// 예외로 즉시 실패 처리하고, 그 외에는 원인이 뭐든 일단 재시도해볼 가치가 있다고 본다.
+// MAX_RETRIES로 3번(또는 댓글은 COMMENT_BACKOFF_MINUTES로 4번)까지만 도니 진짜 영구적인
+// 콘텐츠 거부라도 몇 분 늦게 확정될 뿐, 무한 재시도로 새지 않는다.
 function isRetryableError(err) {
-  return !/^\[.+\] \{/.test(err.message || '');
+  return !channelLevelErrorReason(err);
 }
 
 // Meta 에러 code 10 = 권한 부족(스코프 누락), code 190 = 액세스 토큰 무효화(재로그인/비밀번호
