@@ -8,9 +8,9 @@ const escapeHtml = (str) =>
 
 // 상태값(DB 컬럼 그대로)을 발행 내역 화면에 보여줄 한글 라벨로.
 const STATUS_LABELS = {
-  pending: 'pending',
+  pending: '예약',
   processing: 'processing',
-  published: 'published',
+  published: '발행',
   failed: 'failed',
   canceled: 'canceled',
 };
@@ -56,15 +56,16 @@ const layout = (title, body) => `<!doctype html>
   nav a:hover { text-decoration: underline; }
   table { width: 100%; border-collapse: collapse; margin: 16px 0; }
   th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; font-size: 14px; }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
-  .badge-pending { background: #fff3cd; }
-  .badge-published { background: #d4edda; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; text-align: center; }
+  .badge-pending { background: #fff3cd; color: #92400e; font-weight: 700; }
+  .badge-published { background: #d1fae5; color: #047857; font-weight: 700; }
   .badge-failed { background: #f8d7da; }
   .badge-canceled { background: #e2e3e5; color: #555; }
   .badge-comment-pending { background: #fff3cd; }
   .badge-comment-processing { background: #fff3cd; }
   .badge-comment-posted { background: #d4edda; }
   .badge-comment-needs_review { background: #f8d7da; }
+  .badge-comment-none { background: #e2e3e5; color: #6b7280; }
   .cancel-btn { background: #fff; color: #c00; border: 1px solid #f1b0b0; padding: 4px 10px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }
   .report-grid { display: flex; flex-wrap: wrap; gap: 20px; margin: 20px 0; }
   .report-card { flex: 1 1 300px; border: 1px solid #eee; border-radius: 14px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
@@ -572,7 +573,7 @@ const postsHistory = (posts, heartbeat) => layout('발행 내역', `
       posts
         .map((p) => {
           const commentCell = !p.reply_text
-            ? '-'
+            ? `<span class="badge badge-comment-none">댓글 없음</span>`
             : `<span class="badge badge-comment-${p.comment_status || 'pending'}" ${
                 p.comment_error_message ? `title="${escapeHtml(p.comment_error_message)}"` : ''
               }>${COMMENT_LABELS[p.comment_status] || '-'}</span>`;
