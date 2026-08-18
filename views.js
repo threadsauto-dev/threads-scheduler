@@ -56,7 +56,7 @@ const layout = (title, body) => `<!doctype html>
   nav a:hover { text-decoration: underline; }
   table { width: 100%; border-collapse: collapse; margin: 16px 0; }
   th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; font-size: 14px; }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; text-align: center; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; text-align: center; white-space: nowrap; }
   .badge-pending { background: #fff3cd; color: #92400e; font-weight: 700; }
   .badge-published { background: #d1fae5; color: #047857; font-weight: 700; }
   .badge-failed { background: #f8d7da; }
