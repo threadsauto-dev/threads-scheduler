@@ -107,6 +107,40 @@ async function migrate() {
   // NULL이면 매일 반복되는 슬롯(기존 동작), 날짜가 있으면 그 날짜에만 적용되는 1회성 슬롯
   // — 사람마다 특정 날짜에만 필요한 예외적인 시간대가 있을 수 있다는 요청으로 추가(2026-08-15).
   await pool.query(`ALTER TABLE channel_slots ADD COLUMN IF NOT EXISTS slot_date DATE;`);
+
+  // 리포트 화면에서 날짜별로 남기는 자유 메모("이 날부터 물량 늘림" 등) — 조회수/발행량처럼
+  // 이미 집계되는 값이 아니라, 집계로는 안 잡히는 특이사항을 사람이 직접 남기는 용도.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS report_notes (
+      report_date DATE PRIMARY KEY,
+      note TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+
+  // 채널별 "하루 목표 개수" — 예전 channel_slots(고정 시간표)를 대신한다. 실제 시각은
+  // 더 이상 여기 저장하지 않고 slots.js가 매번 그날그날 무작위로 정한다(자세한 이유는
+  // slots.js 상단 주석 참고). channel_slots 테이블 자체는 지우지 않고 과거 기록으로 남겨둔다.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS channel_daily_targets (
+      channel_id INTEGER PRIMARY KEY REFERENCES channels(id) ON DELETE CASCADE,
+      ad_count INTEGER NOT NULL DEFAULT 0,
+      info_count INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+  // 1회성 백필: 기존에 등록해둔 고정 시간표(channel_slots, 매일 반복분만)의 개수를 그대로
+  // 초기 목표값으로 옮겨서, 채널마다 다시 손으로 개수를 입력할 필요가 없게 한다. 이미
+  // channel_daily_targets에 행이 있는 채널은 건드리지 않는다(사용자가 이미 조정했을 수 있음).
+  await pool.query(`
+    INSERT INTO channel_daily_targets (channel_id, ad_count, info_count)
+    SELECT channel_id,
+      count(*) FILTER (WHERE slot_type = '광고용'),
+      count(*) FILTER (WHERE slot_type = '정보성')
+    FROM channel_slots
+    WHERE slot_date IS NULL
+    GROUP BY channel_id
+    ON CONFLICT (channel_id) DO NOTHING;
+  `);
 }
 
 module.exports = { pool, migrate };

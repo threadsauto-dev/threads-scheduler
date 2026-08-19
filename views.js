@@ -87,6 +87,24 @@ const layout = (title, body) => `<!doctype html>
   .hour-cell.pending .n { color: #d97706; }
   .hour-cell.failed { background: #fde8e8; }
   .hour-cell.failed .n { color: #dc2626; }
+  .cal-toggle { padding: 5px 10px; border-radius: 6px; border: 1px solid #ccc; font-size: 13px; font-family: inherit; background: #fff; cursor: pointer; margin: 0; }
+  .cal-popup { display: none; position: absolute; z-index: 10; top: calc(100% + 4px); left: 0; background: #fff; border: 1px solid #ddd; border-radius: 10px; box-shadow: 0 4px 16px rgba(0,0,0,0.1); padding: 12px; width: 240px; }
+  .cal-popup.open { display: block; }
+  .cal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 13px; font-weight: 600; }
+  .cal-header button { background: none; border: none; color: #555; font-size: 14px; padding: 2px 6px; cursor: pointer; }
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+  .cal-dow { text-align: center; font-size: 10px; color: #aaa; padding-bottom: 4px; }
+  .cal-day { position: relative; text-align: center; font-size: 12px; padding: 6px 0; border-radius: 6px; cursor: pointer; background: none; border: none; font-family: inherit; }
+  .cal-day:hover { background: #f2f2f2; }
+  .cal-day.empty { cursor: default; }
+  .cal-day.empty:hover { background: none; }
+  .cal-day.selected { background: #000; color: #fff; }
+  .cal-day .dot { position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); width: 4px; height: 4px; border-radius: 50%; background: #dc2626; }
+  .cal-day.selected .dot { background: #fff; }
+  .note-box textarea { min-height: 50px; margin: 6px 0; }
+  .note-box .note-actions { display: flex; align-items: center; gap: 10px; }
+  .note-box button { padding: 8px 18px; font-size: 13px; }
+  .note-saved { font-size: 12px; color: #16a34a; }
   footer { margin-top: 40px; font-size: 13px; color: #888; }
   footer a { color: #888; }
 </style>
@@ -121,51 +139,32 @@ const adminLogin = (error) => layout('관리자 로그인', `
   </form>
 `);
 
-const SLOT_TYPES = ['정보성', '광고용'];
-
-// 채널 하나의 TIME BOX(고정 시간표) 관리 UI — 매일 반복되는 슬롯을 추가/삭제하고,
-// 오늘 기준으로 슬롯이 몇 개나 남았는지 보여준다.
-const channelSlotBox = (c) => {
+// 채널 하나의 "하루 목표 개수" 설정 UI. 실제 발행 시각은 더 이상 여기서 직접 정하지 않고
+// slots.js가 매번 그날그날 무작위로(피크시간 회피/우선순위 + 전체 채널 간 최소 간격을
+// 지키며) 정한다 — 그래서 여기는 몇 개씩 만들지만 정하면 된다.
+const channelTargetBox = (c) => {
   if (c.disconnected_at) return '';
   const summary = c.todaySummary || { 정보성: { total: 0, remaining: 0 }, 광고용: { total: 0, remaining: 0 } };
+  const target = c.target || { ad_count: 0, info_count: 0 };
   return `
   <div style="border:1px solid #eee; border-radius:10px; padding:14px 16px; margin:-8px 0 20px;">
-    <div style="font-size:13px; color:#888; margin-bottom:8px;">
+    <div style="font-size:13px; color:#888; margin-bottom:10px;">
       오늘 정보성 ${summary.정보성.remaining}/${summary.정보성.total}개 남음 · 광고용 ${summary.광고용.remaining}/${summary.광고용.total}개 남음
     </div>
-    ${
-      (c.slots || []).length === 0
-        ? '<p style="font-size:13px; color:#999; margin:4px 0 10px;">등록된 시간대가 없습니다.</p>'
-        : `<div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px;">
-      ${c.slots
-        .map((s) => {
-          // pg가 DATE를 서버 로컬 타임존 자정으로 돌려주므로 toISOString() 대신 로컬 getter를 써야
-          // 타임존에 따라 하루 밀리는 걸 피할 수 있다(slots.js의 pgDateToStr와 같은 이유).
-          const dateLabel = s.slot_date
-            ? `${String(new Date(s.slot_date).getMonth() + 1).padStart(2, '0')}/${String(new Date(s.slot_date).getDate()).padStart(2, '0')} `
-            : '';
-          const confirmLabel = `${dateLabel}${s.slot_time.slice(0, 5)} ${s.slot_type}`;
-          return `<form method="post" action="/channels/${c.id}/slots/${s.id}/delete" style="margin:0;" onsubmit="return confirm('${confirmLabel} 슬롯을 삭제할까요?');">
-        <button type="submit" style="font-size:12px; padding:4px 8px; border-radius:999px; border:1px solid #ddd; background:${s.slot_type === '정보성' ? '#eef4ff' : '#fff4e5'}; color:#333; cursor:pointer;">
-          ${confirmLabel}${s.slot_date ? ' 📌' : ''} ✕
-        </button>
-      </form>`;
-        })
-        .join('')}
-    </div>`
-    }
-    <form method="post" action="/channels/${c.id}/slots" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:0;">
-      <input type="time" name="slotTime" required style="width:auto; margin:0;" />
-      <select name="slotType" required style="width:auto; margin:0;">
-        ${SLOT_TYPES.map((t) => `<option value="${t}">${t}</option>`).join('')}
-      </select>
-      <label style="font-weight:400; font-size:12px; color:#888; display:flex; align-items:center; gap:4px;">
-        특정 날짜만(선택)
-        <input type="date" name="slotDate" style="width:auto; margin:0;" />
+    <form method="post" action="/channels/${c.id}/targets" style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:0;">
+      <label style="font-weight:400; font-size:13px; color:#555; display:flex; align-items:center; gap:6px;">
+        하루 광고성
+        <input type="number" name="adCount" min="0" value="${target.ad_count}" style="width:60px; margin:0;" />
+        개
       </label>
-      <button type="submit" style="padding:8px 14px; font-size:13px;">+ 시간대 추가</button>
+      <label style="font-weight:400; font-size:13px; color:#555; display:flex; align-items:center; gap:6px;">
+        하루 정보성
+        <input type="number" name="infoCount" min="0" value="${target.info_count}" style="width:60px; margin:0;" />
+        개
+      </label>
+      <button type="submit" style="padding:8px 14px; font-size:13px;">저장</button>
     </form>
-    <p style="font-size:12px; color:#999; margin:6px 0 0;">날짜를 비워두면 매일 반복, 채우면 그 날짜에만 적용되는 1회성 슬롯(📌)이 됩니다.</p>
+    <p style="font-size:12px; color:#999; margin:8px 0 0;">발행 시각은 매일 자동으로 무작위 배정됩니다(정보성은 08-10/12-14/17-22시 회피, 광고성은 그 시간대 우선 · 채널 간 최소 간격 유지). 예정된 시각은 발행 내역에서 확인하세요.</p>
   </div>`;
 };
 
@@ -198,7 +197,7 @@ const channelsList = (channels) => layout('채널', `
         ? `<tr><td colspan="4" style="font-size:13px; color:#c00; padding-top:0;">⚠ ${escapeHtml(c.reconnect_reason)}</td></tr>`
         : ''
     }
-    <tr><td colspan="4" style="padding-top:0;">${channelSlotBox(c)}</td></tr>`
+    <tr><td colspan="4" style="padding-top:0;">${channelTargetBox(c)}</td></tr>`
         )
         .join('') || '<tr><td colspan="4">연결된 채널이 없습니다.</td></tr>'
     }
@@ -634,16 +633,32 @@ function trendSparkline(trend) {
     </svg>`;
 }
 
-const reportDashboard = (channels, { reportDate, prevDate, nextDate } = {}) => layout('리포트', `
+const reportDashboard = (channels, { reportDate, prevDate, nextDate, note = '', noteDates = [] } = {}) => layout('리포트', `
   ${nav()}
   <h1>리포트</h1>
-  <div style="display:flex; align-items:center; gap:8px; margin:8px 0 4px;">
+  <div style="display:flex; align-items:center; gap:8px; margin:8px 0 4px; position:relative;">
     <a href="/report?date=${prevDate}" style="text-decoration:none; font-size:16px; color:#555; padding:2px 6px;">◀</a>
-    <input type="date" value="${reportDate}" onchange="location.href='/report?date=' + this.value"
-      style="padding:5px 8px; border-radius:6px; border:1px solid #ccc; font-size:13px; font-family:inherit;" />
+    <button type="button" class="cal-toggle" id="calToggle">${reportDate}</button>
     <a href="/report?date=${nextDate}" style="text-decoration:none; font-size:16px; color:#555; padding:2px 6px;">▶</a>
+    <div class="cal-popup" id="calPopup">
+      <div class="cal-header">
+        <button type="button" id="calPrev">◀</button>
+        <span id="calMonthLabel"></span>
+        <button type="button" id="calNext">▶</button>
+      </div>
+      <div class="cal-grid" id="calGrid"></div>
+    </div>
   </div>
   <p style="color:#888; font-size:13px; margin-top:0;">조회수는 발행 후 48시간 동안 20분마다 갱신됩니다.</p>
+  <form method="post" action="/report/note" class="note-box" style="border:1px solid #eee; border-radius:12px; padding:14px 16px; margin-bottom:20px;">
+    <input type="hidden" name="date" value="${reportDate}" />
+    <label>이 날짜 특이사항</label>
+    <textarea name="note" placeholder="예: 8/20부터 1채널만 하루 24개로 늘려서 테스트 시작">${escapeHtml(note)}</textarea>
+    <div class="note-actions">
+      <button type="submit">저장</button>
+      ${note ? '<span class="note-saved">저장된 메모 있음</span>' : ''}
+    </div>
+  </form>
   <div class="report-grid">
     ${
       channels
@@ -679,6 +694,66 @@ const reportDashboard = (channels, { reportDate, prevDate, nextDate } = {}) => l
         .join('') || '<p>연결된 채널이 없습니다.</p>'
     }
   </div>
+  <script>
+    (function () {
+      var noteDates = ${JSON.stringify(noteDates)};
+      var selected = ${JSON.stringify(reportDate)};
+      var noteDateSet = {};
+      for (var i = 0; i < noteDates.length; i++) noteDateSet[noteDates[i]] = true;
+
+      var selParts = selected.split('-').map(Number);
+      var viewYear = selParts[0], viewMonth = selParts[1] - 1; // 0-indexed month, 달력에서 보고 있는 월(선택된 날짜와 별개로 이전/다음 이동 가능)
+
+      var toggle = document.getElementById('calToggle');
+      var popup = document.getElementById('calPopup');
+      var grid = document.getElementById('calGrid');
+      var monthLabel = document.getElementById('calMonthLabel');
+      var DOW = ['일', '월', '화', '수', '목', '금', '토'];
+
+      function pad(n) { return n < 10 ? '0' + n : '' + n; }
+
+      function render() {
+        monthLabel.textContent = viewYear + '년 ' + (viewMonth + 1) + '월';
+        var html = DOW.map(function (d) { return '<div class="cal-dow">' + d + '</div>'; }).join('');
+        var firstDow = new Date(viewYear, viewMonth, 1).getDay();
+        var daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+        for (var i = 0; i < firstDow; i++) html += '<button type="button" class="cal-day empty" disabled></button>';
+        for (var d = 1; d <= daysInMonth; d++) {
+          var dateStr = viewYear + '-' + pad(viewMonth + 1) + '-' + pad(d);
+          var cls = 'cal-day' + (dateStr === selected ? ' selected' : '');
+          var dot = noteDateSet[dateStr] ? '<span class="dot"></span>' : '';
+          html += '<button type="button" class="' + cls + '" data-date="' + dateStr + '">' + d + dot + '</button>';
+        }
+        grid.innerHTML = html;
+        var dayBtns = grid.querySelectorAll('.cal-day:not(.empty)');
+        for (var j = 0; j < dayBtns.length; j++) {
+          dayBtns[j].addEventListener('click', function () {
+            location.href = '/report?date=' + this.getAttribute('data-date');
+          });
+        }
+      }
+
+      toggle.addEventListener('click', function (e) {
+        e.stopPropagation();
+        popup.classList.toggle('open');
+      });
+      document.getElementById('calPrev').addEventListener('click', function () {
+        viewMonth--;
+        if (viewMonth < 0) { viewMonth = 11; viewYear--; }
+        render();
+      });
+      document.getElementById('calNext').addEventListener('click', function () {
+        viewMonth++;
+        if (viewMonth > 11) { viewMonth = 0; viewYear++; }
+        render();
+      });
+      document.addEventListener('click', function (e) {
+        if (!popup.contains(e.target) && e.target !== toggle) popup.classList.remove('open');
+      });
+
+      render();
+    })();
+  </script>
 `);
 
 const errorPage = (message) => layout('오류', `

@@ -121,50 +121,35 @@ app.get('/logout', (req, res) => {
 
 app.get('/channels', requireAdmin, async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM channels ORDER BY created_at DESC');
-  const { rows: slotRows } = await pool.query(
-    'SELECT * FROM channel_slots WHERE channel_id = ANY($1) ORDER BY channel_id, slot_time',
+  const { rows: targetRows } = await pool.query(
+    'SELECT * FROM channel_daily_targets WHERE channel_id = ANY($1)',
     [rows.map((c) => c.id)]
   );
-  const slotsByChannel = new Map();
-  for (const s of slotRows) {
-    if (!slotsByChannel.has(s.channel_id)) slotsByChannel.set(s.channel_id, []);
-    slotsByChannel.get(s.channel_id).push(s);
-  }
+  const targetsByChannel = new Map(targetRows.map((t) => [t.channel_id, t]));
   const summaries = await Promise.all(
     rows.map((c) => (c.disconnected_at ? null : slots.getTodaySlotSummary(pool, c.id)))
   );
-  const channelsWithSlots = rows.map((c, i) => ({
+  const channelsWithTargets = rows.map((c, i) => ({
     ...c,
-    slots: slotsByChannel.get(c.id) || [],
+    target: targetsByChannel.get(c.id) || { ad_count: 0, info_count: 0 },
     todaySummary: summaries[i],
   }));
-  res.send(views.channelsList(channelsWithSlots));
+  res.send(views.channelsList(channelsWithTargets));
 });
 
 app.get('/channels/connect', requireAdmin, (req, res) => {
   res.redirect(threads.buildAuthorizeUrl(env));
 });
 
-app.post('/channels/:id/slots', requireAdmin, async (req, res) => {
-  const { slotTime, slotType, slotDate } = req.body;
-  if (!slotTime || !['정보성', '광고용'].includes(slotType)) {
-    return res.status(400).send(views.errorPage('슬롯 시간/유형이 올바르지 않습니다.'));
-  }
-  // slotDate가 비어있으면 매일 반복되는 슬롯(NULL), 채워져 있으면 그 날짜 하루만 적용.
-  await pool.query(`INSERT INTO channel_slots (channel_id, slot_time, slot_type, slot_date) VALUES ($1, $2, $3, $4)`, [
-    req.params.id,
-    slotTime,
-    slotType,
-    slotDate || null,
-  ]);
-  res.redirect('/channels');
-});
-
-app.post('/channels/:id/slots/:slotId/delete', requireAdmin, async (req, res) => {
-  await pool.query(`DELETE FROM channel_slots WHERE id = $1 AND channel_id = $2`, [
-    req.params.slotId,
-    req.params.id,
-  ]);
+// 채널마다 "하루 목표 개수"만 설정한다 — 실제 시각은 slots.js가 매번 그날그날 무작위로 정한다.
+app.post('/channels/:id/targets', requireAdmin, async (req, res) => {
+  const adCount = Math.max(0, parseInt(req.body.adCount, 10) || 0);
+  const infoCount = Math.max(0, parseInt(req.body.infoCount, 10) || 0);
+  await pool.query(
+    `INSERT INTO channel_daily_targets (channel_id, ad_count, info_count) VALUES ($1, $2, $3)
+     ON CONFLICT (channel_id) DO UPDATE SET ad_count = $2, info_count = $3`,
+    [req.params.id, adCount, infoCount]
+  );
   res.redirect('/channels');
 });
 
@@ -552,7 +537,40 @@ app.get('/report', requireAdmin, async (req, res) => {
     }),
   }));
 
-  res.send(views.reportDashboard(channels, { reportDate, prevDate, nextDate }));
+  // 선택된 날짜의 메모 본문 + 달력에 점 찍을 "메모 있는 날짜" 전체 목록. 메모 개수가
+  // 이 개인 용도 수준에서는 많지 않을 거라 기간 제한 없이 전부 가져온다.
+  const [{ rows: noteRows }, { rows: noteDateRows }] = await Promise.all([
+    pool.query('SELECT note FROM report_notes WHERE report_date = $1', [reportDate]),
+    pool.query('SELECT report_date::text AS d FROM report_notes ORDER BY report_date'),
+  ]);
+
+  res.send(
+    views.reportDashboard(channels, {
+      reportDate,
+      prevDate,
+      nextDate,
+      note: noteRows[0] ? noteRows[0].note : '',
+      noteDates: noteDateRows.map((r) => r.d),
+    })
+  );
+});
+
+app.post('/report/note', requireAdmin, async (req, res) => {
+  const dateParam = /^\d{4}-\d{2}-\d{2}$/.test(req.body.date || '') ? req.body.date : null;
+  if (!dateParam) return res.redirect('/report');
+  const note = (req.body.note || '').trim();
+  if (note) {
+    await pool.query(
+      `INSERT INTO report_notes (report_date, note, updated_at) VALUES ($1, $2, now())
+       ON CONFLICT (report_date) DO UPDATE SET note = $2, updated_at = now()`,
+      [dateParam, note]
+    );
+  } else {
+    // 빈 값으로 저장하면 "메모 없음" 상태와 구분이 안 되니, 지웠을 땐 행 자체를 삭제해서
+    // 달력의 점 표시에서도 바로 빠지게 한다.
+    await pool.query('DELETE FROM report_notes WHERE report_date = $1', [dateParam]);
+  }
+  res.redirect(`/report?date=${dateParam}`);
 });
 
 app.get('/privacy', (req, res) => res.send(views.privacy()));

@@ -1,145 +1,224 @@
-// TIME BOX: 채널마다 등록해둔 고정 시간표(channel_slots)를 기준으로, 아직 안 채워진
-// 다음 슬롯을 찾아 발행 시각을 추천한다. 매일 같은 시간표가 반복된다는 전제.
-const DAY_MS = 24 * 60 * 60 * 1000;
+// 하루 예약 스케줄러 (2026-08 재설계).
+//
+// 예전 방식: 채널마다 고정된 시간표(channel_slots, 예: "09:45 광고용")를 등록해두고 매일
+// 그대로 반복. 문제는 두 가지였다 — (1) 정보성/광고성 배치가 날마다 완전히 똑같은 템플릿으로
+// 반복돼서 자동화 티가 났고, (2) 채널별로만 시간을 흩어놨지 여러 채널을 합친 전체로 보면
+// API 호출이 거의 쉬지 않고 이어지는 모양이 될 수 있었다.
+//
+// 새 방식: 채널마다 "하루에 광고성 몇 개·정보성 몇 개"라는 목표 개수만 설정해두고
+// (channel_daily_targets), 실제 시각은 매번 이 파일이 그날그날 새로 무작위 배정한다.
+// - 정보성은 사람이 몰리는 시간대(08-10/12-14/17-22)를 아예 피해서 배정
+// - 광고성은 그 시간대를 최우선으로 채우고, 다 차면 다음 우선순위 시간대로 넘어감
+// - 다른 채널과는 최소 GLOBAL_MIN_GAP_MIN분, 같은 채널 자기 글끼리는 그보다 더 넉넉한
+//   CHANNEL_MIN_GAP_MIN분 이상 떨어지게 배정 — 채널 수가 늘어나도 전체적으로 API 호출이
+//   촘촘하게 몰리지 않게 하고, 한 채널만 보더라도 시간이 뭉치지 않게 하기 위함. 이 간격을
+//   지키면서 하루 안에 다 못 넣을 만큼 물량이 많으면(예: 채널당 요청 개수가 과함) 억지로
+//   욱여넣지 않고 다음 날로 자연스럽게 넘어간다 — 그게 오히려 원하는 동작이다.
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
-const SEARCH_DAYS = 14; // 이 기간 안에 빈 슬롯을 못 찾으면 포기(슬롯 자체가 없거나 너무 꽉 찬 경우)
-const OCCUPIED_WINDOW_MIN = 15; // 슬롯 나온 시각 기준 ±15분 안에 이미 예약이 있으면 "그 슬롯은 찼다"고 봄
-const JITTER_MIN = 10; // ±10분
+const DAY_MS = 24 * 60 * 60 * 1000;
+const SEARCH_DAYS = 14; // 이 기간 안에 자리를 못 찾으면 포기(물량이 감당 못 할 만큼 많은 경우)
+const GLOBAL_MIN_GAP_MIN = 15; // 채널 불문, 어떤 두 예약도 이보다 가깝게는 안 잡음
+const CHANNEL_MIN_GAP_MIN = 40; // 같은 채널 자기 글끼리는 이보다 더 넉넉하게
+const PLACEMENT_ATTEMPTS = 50; // 한 시간대(윈도우) 안에서 빈자리를 찾기 위한 무작위 재시도 횟수
 
-function toKstParts(date) {
+// 사람이 스레드를 많이 하는 시간대 — 광고성이 최우선으로 차지하고, 정보성은 아예 피한다.
+const PEAK_WINDOWS = [
+  [8 * 60, 10 * 60],
+  [12 * 60, 14 * 60],
+  [17 * 60, 22 * 60],
+];
+// 차선책 시간대 — 광고성이 피크에 다 못 들어갈 때 다음으로 채우는 곳.
+const SECONDARY_WINDOWS = [
+  [10 * 60, 12 * 60],
+  [14 * 60, 17 * 60],
+];
+// 나머지(심야/새벽) — 광고성의 마지막 순위, 정보성은 여기도 자유롭게 쓸 수 있음.
+const OFFPEAK_WINDOWS = [
+  [0, 8 * 60],
+  [22 * 60, 24 * 60],
+];
+
+// 태그별로 "어느 시간대를 어떤 우선순위로 시도할지"의 순서.
+// 정보성은 우선순위 구분 없이 피크만 아니면 다 되니 한 묶음(1순위)으로 합쳐서 넣는다.
+function windowTiersForTag(tag) {
+  if (tag === '정보성') return [[...SECONDARY_WINDOWS, ...OFFPEAK_WINDOWS]];
+  return [PEAK_WINDOWS, SECONDARY_WINDOWS, OFFPEAK_WINDOWS];
+}
+
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+// Date 객체(실제 시각)를 KST 기준 "그날 몇 분째"로 변환. 서버가 어떤 타임존에서 돌든
+// 결과가 항상 같도록 UTC 게터만 쓴다(로컬 게터를 쓰면 서버 로컬 타임존이 끼어드는 문제가
+// 이 프로젝트에서 실제로 있었다).
+function minutesOfDayKst(date) {
   const kst = new Date(date.getTime() + KST_OFFSET_MS);
-  return {
-    dateStr: kst.toISOString().slice(0, 10),
-    minutesOfDay: kst.getUTCHours() * 60 + kst.getUTCMinutes(),
-  };
+  return kst.getUTCHours() * 60 + kst.getUTCMinutes();
 }
 
-// pg는 DATE 컬럼을 "그 값을 서버 로컬 타임존의 자정으로 해석한 Date"로 돌려준다(UTC 자정이
-// 아님) — 그래서 이 값을 문자열로 되돌릴 땐 반드시 로컬 getter를 써야 한다. toISOString()을
-// 쓰면 서버 로컬 타임존이 UTC가 아닐 때(예: KST) 하루가 밀리는 버그가 생긴다(실제로 겪음).
-function pgDateToStr(date) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+// "YYYY-MM-DD"(KST) 문자열 + 분(0~1439)을 실제 시각(ms epoch)으로.
+function kstDateAndMinutesToMs(dateStr, minutesOfDay) {
+  return Date.parse(`${dateStr}T00:00:00+09:00`) + minutesOfDay * 60000;
 }
 
-// 특정 채널·태그의 다음 빈 슬롯을 찾아 { dateStr, hour, minute }(KST)로 돌려준다.
-// fromDateStr("YYYY-MM-DD")을 주면 오늘이 아니라 그 날짜부터 검색을 시작한다(미리 준비해둔
-// 콘텐츠를 특정 날짜부터 배치하고 싶을 때). 생략하면 지금(오늘)부터.
-// 슬롯이 하나도 등록 안 됐거나(설정 안 함) 검색 기간 안에 빈 슬롯이 없으면 null.
-async function getNextAvailableSlot(pool, channelId, tag, fromDateStr) {
-  const { rows: allSlots } = await pool.query(
-    `SELECT slot_time, slot_date FROM channel_slots WHERE channel_id = $1 AND slot_type = $2 ORDER BY slot_time`,
-    [channelId, tag]
-  );
-  if (allSlots.length === 0) return null;
-  // slot_date가 NULL이면 매일 반복, 있으면 그 날짜 하루만 적용되는 1회성 슬롯
-  const recurringSlots = allSlots.filter((s) => !s.slot_date);
-  const datedSlotsByDate = new Map(); // "YYYY-MM-DD" -> [슬롯,...]
-  for (const s of allSlots) {
-    if (!s.slot_date) continue;
-    const d = pgDateToStr(s.slot_date);
-    if (!datedSlotsByDate.has(d)) datedSlotsByDate.set(d, []);
-    datedSlotsByDate.get(d).push(s);
-  }
+// 오늘(또는 검색 시작일)부터 dayOffset일 뒤의 KST 날짜 문자열.
+function addDaysKst(startDateStr, dayOffset) {
+  const startMs = Date.parse(`${startDateStr}T00:00:00+09:00`);
+  const target = new Date(startMs + dayOffset * DAY_MS + KST_OFFSET_MS);
+  return `${target.getUTCFullYear()}-${pad2(target.getUTCMonth() + 1)}-${pad2(target.getUTCDate())}`;
+}
 
-  const { rows: existing } = await pool.query(
-    `SELECT scheduled_at FROM scheduled_posts
-     WHERE channel_id = $1 AND status != 'canceled'
-       AND scheduled_at > now() - interval '1 day' AND scheduled_at < now() + interval '${SEARCH_DAYS + 31} days'`,
-    [channelId]
-  );
-  const occupied = existing.map((r) => toKstParts(new Date(r.scheduled_at)));
+function todayKstDateStr() {
+  const kst = new Date(Date.now() + KST_OFFSET_MS);
+  return `${kst.getUTCFullYear()}-${pad2(kst.getUTCMonth() + 1)}-${pad2(kst.getUTCDate())}`;
+}
 
-  const now = new Date();
-  const searchStartKst = fromDateStr
-    ? new Date(Date.parse(`${fromDateStr}T00:00:00+09:00`) + KST_OFFSET_MS)
-    : new Date(now.getTime() + KST_OFFSET_MS);
-  searchStartKst.setUTCHours(0, 0, 0, 0);
-  const todayStartKst = searchStartKst;
-
-  for (let dayOffset = 0; dayOffset < SEARCH_DAYS; dayOffset++) {
-    const dateStr = new Date(todayStartKst.getTime() + dayOffset * DAY_MS).toISOString().slice(0, 10);
-    const daySlots = [...recurringSlots, ...(datedSlotsByDate.get(dateStr) || [])].sort((a, b) =>
-      a.slot_time < b.slot_time ? -1 : a.slot_time > b.slot_time ? 1 : 0
-    );
-
-    for (const slot of daySlots) {
-      const [h, m] = slot.slot_time.slice(0, 5).split(':').map(Number);
-      const minutesOfDay = h * 60 + m;
-      const candidateMs = Date.parse(`${dateStr}T00:00:00+09:00`) + minutesOfDay * 60000;
-      if (candidateMs < now.getTime() - 5000) continue; // 이미 지난 슬롯
-
-      const takenNearby = occupied.some(
-        (o) => o.dateStr === dateStr && Math.abs(o.minutesOfDay - minutesOfDay) < OCCUPIED_WINDOW_MIN
-      );
-      if (takenNearby) continue;
-
-      const jitterMs = Math.round((Math.random() * 2 - 1) * JITTER_MIN) * 60000;
-      let finalMs = candidateMs + jitterMs;
-      // 지터 때문에 과거로 밀려나는(임박한 슬롯 + 음수 지터) 경우 최소 1분 뒤로 당김
-      if (finalMs < now.getTime() + 60000) finalMs = now.getTime() + 60000;
-
-      const finalKst = toKstParts(new Date(finalMs));
-      return {
-        dateStr: finalKst.dateStr,
-        hour: String(Math.floor(finalKst.minutesOfDay / 60)).padStart(2, '0'),
-        minute: String(finalKst.minutesOfDay % 60).padStart(2, '0'),
-      };
+// 윈도우 묶음(예: [[480,600],[720,840]]) 안에서, occupiedEntries(그날 이미 잡힌 다른
+// 예약들의 {minute, minGap} 목록 — minGap은 항목마다 다를 수 있다: 같은 채널 자기 글이면
+// CHANNEL_MIN_GAP_MIN, 다른 채널이면 GLOBAL_MIN_GAP_MIN)와 간격을 지키는 무작위 지점을
+// 찾는다. minAllowedMinutes를 주면 그보다 이른 시각은 후보에서 제외(오늘 검색 중 이미
+// 지난 시각을 거르기 위함).
+function pickMinuteInWindows(windows, occupiedEntries, minAllowedMinutes) {
+  const totalLen = windows.reduce((sum, [s, e]) => sum + (e - s), 0);
+  if (totalLen <= 0) return null;
+  for (let attempt = 0; attempt < PLACEMENT_ATTEMPTS; attempt++) {
+    let offset = Math.floor(Math.random() * totalLen);
+    let minute = null;
+    for (const [s, e] of windows) {
+      const len = e - s;
+      if (offset < len) {
+        minute = s + offset;
+        break;
+      }
+      offset -= len;
     }
+    if (minute === null) continue;
+    if (minAllowedMinutes != null && minute < minAllowedMinutes) continue;
+    const tooClose = occupiedEntries.some((o) => Math.abs(o.minute - minute) < o.minGap);
+    if (tooClose) continue;
+    return minute;
   }
   return null;
 }
 
-// 연결된 모든 채널을 통틀어 "가장 먼저 비어있는 슬롯"을 찾는다 — 어느 채널로 갈지는
-// 신경 쓰지 않고, 채널별 슬롯 합계와 확장 프로그램에서 준비하는 개수를 미리 맞춰두면
-// 순서대로 채우기만 해도 각 채널에 정확히 맞게 자동 분배된다는 전제로 설계함.
-async function getNextAvailableSlotAnyChannel(pool, tag, fromDateStr) {
-  const { rows: channels } = await pool.query(`SELECT id FROM channels WHERE disconnected_at IS NULL`);
-  if (channels.length === 0) return null;
-
-  const candidates = (
-    await Promise.all(
-      channels.map(async (c) => ({ channelId: c.id, slot: await getNextAvailableSlot(pool, c.id, tag, fromDateStr) }))
-    )
-  ).filter((r) => r.slot);
-  if (candidates.length === 0) return null;
-
-  candidates.sort((a, b) => {
-    const aKey = `${a.slot.dateStr}T${a.slot.hour}:${a.slot.minute}`;
-    const bKey = `${b.slot.dateStr}T${b.slot.hour}:${b.slot.minute}`;
-    return aKey < bKey ? -1 : aKey > bKey ? 1 : 0;
-  });
-  const best = candidates[0];
-  return { channelId: best.channelId, ...best.slot };
+// 특정 KST 날짜에 이미 잡혀 있는 모든 예약(채널 불문, 취소 제외)의 {channelId, tag, minutesOfDay} 목록.
+// 전역 최소 간격 체크와 채널별 오늘 사용량 집계를 이 한 번의 조회로 같이 해결한다.
+async function loadDaySchedule(pool, dateStr) {
+  const { rows } = await pool.query(
+    `SELECT channel_id, tag, scheduled_at FROM scheduled_posts
+     WHERE status != 'canceled' AND (scheduled_at AT TIME ZONE 'Asia/Seoul')::date = $1::date`,
+    [dateStr]
+  );
+  return rows.map((r) => ({
+    channelId: r.channel_id,
+    tag: r.tag,
+    minutesOfDay: minutesOfDayKst(new Date(r.scheduled_at)),
+  }));
 }
 
-// 채널 목록 화면에 "오늘 슬롯 몇 개 중 몇 개 남았는지" 보여주기 위한 집계.
-// 반환: { 정보성: { total, remaining }, 광고용: { total, remaining } }
-async function getTodaySlotSummary(pool, channelId) {
-  // 오늘 적용되는 슬롯 = 매일 반복(slot_date IS NULL) + 오늘 날짜로 지정된 1회성 슬롯
-  const { rows: slots } = await pool.query(
-    `SELECT slot_time, slot_type FROM channel_slots
-     WHERE channel_id = $1 AND (slot_date IS NULL OR slot_date = (now() AT TIME ZONE 'Asia/Seoul')::date)`,
-    [channelId]
-  );
-  const { rows: existing } = await pool.query(
-    `SELECT scheduled_at FROM scheduled_posts
-     WHERE channel_id = $1 AND status != 'canceled'
-       AND (scheduled_at AT TIME ZONE 'Asia/Seoul')::date = (now() AT TIME ZONE 'Asia/Seoul')::date`,
-    [channelId]
-  );
-  const occupiedMinutes = existing.map((r) => toKstParts(new Date(r.scheduled_at)).minutesOfDay);
+async function loadTargets(pool) {
+  const { rows } = await pool.query('SELECT channel_id, ad_count, info_count FROM channel_daily_targets');
+  const map = new Map();
+  for (const r of rows) map.set(r.channel_id, { 광고용: r.ad_count, 정보성: r.info_count });
+  return map;
+}
 
+function targetFor(targetsMap, channelId, tag) {
+  const t = targetsMap.get(channelId);
+  return t ? t[tag] || 0 : 0;
+}
+
+// 그날 태그별로 채널마다 이미 몇 개 잡혀 있는지.
+function usedCountByChannel(daySchedule, tag) {
+  const map = new Map();
+  for (const row of daySchedule) {
+    if (row.tag !== tag) continue;
+    map.set(row.channelId, (map.get(row.channelId) || 0) + 1);
+  }
+  return map;
+}
+
+// 연결된 모든 채널 중, 그날 그 태그로 아직 목표를 못 채운 채널들을 "남은 개수 많은 순"으로.
+// 목표를 가장 많이 남긴 채널부터 채워야 하루가 끝날 때쯤 채널 간 배분이 고르게 맞는다.
+function eligibleChannelsDesc(connectedChannelIds, targetsMap, usedMap, tag) {
+  return connectedChannelIds
+    .map((id) => ({ id, remaining: targetFor(targetsMap, id, tag) - (usedMap.get(id) || 0) }))
+    .filter((c) => c.remaining > 0)
+    .sort((a, b) => b.remaining - a.remaining || a.id - b.id);
+}
+
+async function connectedChannelIds(pool) {
+  const { rows } = await pool.query('SELECT id FROM channels WHERE disconnected_at IS NULL');
+  return rows.map((r) => r.id);
+}
+
+// 태그 하나에 대해, fromDateStr부터 최대 SEARCH_DAYS일 안에서 "어느 채널·언제"로 배정할지
+// 찾는다. channelId를 주면 그 채널로 한정, 안 주면(null) 남은 목표가 가장 많은 채널을 고른다.
+// 반환: { channelId, dateStr, hour, minute } 또는 자리를 못 찾으면 null.
+async function findSlot(pool, tag, channelId, fromDateStr) {
+  const startDateStr = fromDateStr || todayKstDateStr();
+  const allConnected = await connectedChannelIds(pool);
+  const targetsMap = await loadTargets(pool);
+  const now = Date.now();
+
+  for (let dayOffset = 0; dayOffset < SEARCH_DAYS; dayOffset++) {
+    const dateStr = addDaysKst(startDateStr, dayOffset);
+    const isToday = dayOffset === 0 && dateStr === todayKstDateStr();
+    const minAllowedMinutes = isToday ? minutesOfDayKst(new Date(now + 60000)) : null;
+
+    const daySchedule = await loadDaySchedule(pool, dateStr);
+    const usedMap = usedCountByChannel(daySchedule, tag);
+
+    let pickedChannelId;
+    if (channelId) {
+      const remaining = targetFor(targetsMap, channelId, tag) - (usedMap.get(channelId) || 0);
+      if (remaining <= 0) continue;
+      pickedChannelId = channelId;
+    } else {
+      const eligible = eligibleChannelsDesc(allConnected, targetsMap, usedMap, tag);
+      if (eligible.length === 0) continue;
+      pickedChannelId = eligible[0].id;
+    }
+
+    const occupiedEntries = daySchedule.map((r) => ({
+      minute: r.minutesOfDay,
+      minGap: r.channelId === pickedChannelId ? CHANNEL_MIN_GAP_MIN : GLOBAL_MIN_GAP_MIN,
+    }));
+    let minute = null;
+    for (const tier of windowTiersForTag(tag)) {
+      minute = pickMinuteInWindows(tier, occupiedEntries, minAllowedMinutes);
+      if (minute !== null) break;
+    }
+    if (minute === null) continue; // 이 날은 모든 시간대가 꽉 참 — 다음 날로
+
+    return {
+      channelId: pickedChannelId,
+      dateStr,
+      hour: pad2(Math.floor(minute / 60)),
+      minute: pad2(minute % 60),
+    };
+  }
+  return null;
+}
+
+async function getNextAvailableSlot(pool, channelId, tag, fromDateStr) {
+  return findSlot(pool, tag, Number(channelId), fromDateStr);
+}
+
+async function getNextAvailableSlotAnyChannel(pool, tag, fromDateStr) {
+  return findSlot(pool, tag, null, fromDateStr);
+}
+
+// 채널 목록 화면에 "오늘 정보성/광고용 몇 개 중 몇 개 남았는지" 보여주기 위한 집계.
+async function getTodaySlotSummary(pool, channelId) {
+  const dateStr = todayKstDateStr();
+  const [targetsMap, daySchedule] = await Promise.all([loadTargets(pool), loadDaySchedule(pool, dateStr)]);
+  const target = targetsMap.get(Number(channelId)) || { 광고용: 0, 정보성: 0 };
   const summary = { 정보성: { total: 0, remaining: 0 }, 광고용: { total: 0, remaining: 0 } };
-  for (const slot of slots) {
-    const [h, m] = slot.slot_time.slice(0, 5).split(':').map(Number);
-    const minutesOfDay = h * 60 + m;
-    const bucket = summary[slot.slot_type];
-    bucket.total += 1;
-    const taken = occupiedMinutes.some((mo) => Math.abs(mo - minutesOfDay) < OCCUPIED_WINDOW_MIN);
-    if (!taken) bucket.remaining += 1;
+  for (const tag of ['정보성', '광고용']) {
+    const used = daySchedule.filter((r) => r.channelId === Number(channelId) && r.tag === tag).length;
+    summary[tag] = { total: target[tag] || 0, remaining: Math.max(0, (target[tag] || 0) - used) };
   }
   return summary;
 }
