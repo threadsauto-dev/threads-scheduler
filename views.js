@@ -87,14 +87,14 @@ const layout = (title, body) => `<!doctype html>
   .hour-cell.pending .n { color: #d97706; }
   .hour-cell.failed { background: #fde8e8; }
   .hour-cell.failed .n { color: #dc2626; }
-  .cal-toggle { padding: 5px 10px; border-radius: 6px; border: 1px solid #ccc; font-size: 13px; font-family: inherit; background: #fff; cursor: pointer; margin: 0; }
+  .cal-toggle { padding: 5px 10px; border-radius: 6px; border: 1px solid #ccc; font-size: 13px; font-family: inherit; background: #fff; color: #1a1a1a; cursor: pointer; margin: 0; }
   .cal-popup { display: none; position: absolute; z-index: 10; top: calc(100% + 4px); left: 0; background: #fff; border: 1px solid #ddd; border-radius: 10px; box-shadow: 0 4px 16px rgba(0,0,0,0.1); padding: 12px; width: 240px; }
   .cal-popup.open { display: block; }
   .cal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 13px; font-weight: 600; }
   .cal-header button { background: none; border: none; color: #555; font-size: 14px; padding: 2px 6px; cursor: pointer; }
   .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
   .cal-dow { text-align: center; font-size: 10px; color: #aaa; padding-bottom: 4px; }
-  .cal-day { position: relative; text-align: center; font-size: 12px; padding: 6px 0; border-radius: 6px; cursor: pointer; background: none; border: none; font-family: inherit; }
+  .cal-day { position: relative; text-align: center; font-size: 12px; padding: 6px 0; border-radius: 6px; cursor: pointer; background: none; color: #1a1a1a; border: none; font-family: inherit; }
   .cal-day:hover { background: #f2f2f2; }
   .cal-day.empty { cursor: default; }
   .cal-day.empty:hover { background: none; }
@@ -171,6 +171,11 @@ const channelTargetBox = (c) => {
 const channelsList = (channels) => layout('채널', `
   ${nav()}
   <h1>연결된 채널</h1>
+  <div style="background:#f6f6f6; border-radius:10px; padding:12px 16px; margin:0 0 20px; font-size:13px; color:#555; line-height:1.7;">
+    참고로 하루 목표 개수를 너무 높게 잡으면 채널 간 최소 간격 때문에 그날 안에 다 못 들어가고 <b>다음 날로 자동으로 넘어갑니다</b> — 대략적인 채널당 하루 상한(직접 측정한 값, 실제 운영 상황에 따라 다를 수 있음):
+    <br />5개 채널 운영 시 — 광고성 15개 이하 / 정보성 9개 이하
+    <br />10개 채널 운영 시 — 광고성 7개 이하 / 정보성 5개 이하
+  </div>
   <table>
     <tr><th>계정</th><th>연결일</th><th>상태</th><th>관리</th></tr>
     ${
