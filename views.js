@@ -77,6 +77,8 @@ const layout = (title, body) => `<!doctype html>
   .stat-value.orange { color: #d97706; }
   .stat-sub { font-size: 12px; color: #999; margin-top: 2px; }
   .stat-row { display: flex; gap: 28px; margin-top: 18px; padding-top: 16px; border-top: 1px solid #f0f0f0; }
+  .stat-target { font-size: 30px; font-weight: 700; line-height: 1.2; color: #1a1a1a; margin-top: 10px; }
+  .stat-target .num { color: #7c3aed; }
   .hour-grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 4px; margin-top: 18px; }
   .hour-cell { text-align: center; border-radius: 6px; padding: 5px 0 4px; background: #f6f6f6; }
   .hour-cell .h { font-size: 9px; color: #aaa; }
@@ -684,8 +686,8 @@ const reportDashboard = (channels, { reportDate, prevDate, nextDate, note = '', 
             <div class="stat-value orange">${ch.pendingCount}</div>
           </div>
         </div>
-        <div class="stat-sub" style="margin-top:8px;">
-          이 날 총 ${ch.publishedCount + ch.pendingCount}개 (목표: 광고성 ${ch.target.ad_count}개 + 정보성 ${ch.target.info_count}개 = ${ch.target.ad_count + ch.target.info_count}개)
+        <div class="stat-target">
+          총 <span class="num">${ch.publishedCount + ch.pendingCount}</span>개 (광고성 <span class="num">${ch.target.ad_count}</span>개 + 정보성 <span class="num">${ch.target.info_count}</span>개)
         </div>
         <div class="hour-grid">
           ${ch.hours
