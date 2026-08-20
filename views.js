@@ -132,6 +132,7 @@ const landing = () => layout('threads-scheduler', `
   <h1>threads-scheduler</h1>
   <p>여러 Threads 채널을 연결하고, 지금 또는 원하는 시각에 대신 글을 게시합니다.</p>
   <a class="button" href="/login">관리자 로그인</a>
+  <p style="margin-top:40px; font-size:12px; color:#999;">운영자: 디지털나우 (사업자등록번호: 826-12-02849)</p>
 `);
 
 const adminLogin = (error) => layout('관리자 로그인', `
@@ -782,6 +783,8 @@ const CONTACT_EMAIL = 'youkukjo@gmail.com';
 const privacy = () => layout('개인정보처리방침', `
   <h1>개인정보처리방침</h1>
   <p>최종 수정일: 2026-08-13</p>
+  <h3>운영자 정보</h3>
+  <p>본 서비스는 디지털나우(사업자등록번호: 826-12-02849)가 운영합니다.</p>
   <h3>수집하는 정보</h3>
   <p>회원님이 "Threads로 로그인"을 통해 직접 동의한 정보만 수집합니다: Threads 프로필(사용자 이름, 계정 ID), 그리고 회원님을 대신해 게시하기 위한 액세스 토큰.</p>
   <h3>사용 목적</h3>
@@ -795,6 +798,8 @@ const privacy = () => layout('개인정보처리방침', `
 const terms = () => layout('이용약관', `
   <h1>이용약관</h1>
   <p>최종 수정일: 2026-08-13</p>
+  <h3>운영자 정보</h3>
+  <p>본 서비스는 디지털나우(사업자등록번호: 826-12-02849)가 운영합니다.</p>
   <h3>서비스 설명</h3>
   <p>threads-scheduler는 연결된 Threads 계정에, 지정한 시점에 게시물(텍스트/이미지/영상)을 대신 게시해주는 도구입니다.</p>
   <h3>책임</h3>
