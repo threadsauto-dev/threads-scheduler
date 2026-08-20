@@ -574,10 +574,24 @@ const workerStatusBanner = (heartbeat) => {
 
 const formatNumber = (n) => (n === null || n === undefined ? '-' : n.toLocaleString('ko-KR'));
 
-const postsHistory = (posts, heartbeat) => layout('발행 내역', `
+const postsHistory = (posts, heartbeat, channels = [], selectedChannelId = null) => layout('발행 내역', `
   ${nav()}
   <h1>발행 내역</h1>
   ${workerStatusBanner(heartbeat)}
+  <form method="get" action="/posts" style="margin:12px 0 20px;">
+    <label style="font-weight:400; font-size:13px; color:#555; display:flex; align-items:center; gap:8px; max-width:260px;">
+      채널
+      <select name="channel" onchange="this.form.submit()" style="margin:0;">
+        <option value="">전체</option>
+        ${channels
+          .map(
+            (c) =>
+              `<option value="${c.id}" ${selectedChannelId === c.id ? 'selected' : ''}>@${c.username}</option>`
+          )
+          .join('')}
+      </select>
+    </label>
+  </form>
   <table>
     <tr><th>채널</th><th>본문</th><th>예정 시각</th><th>상태</th><th>조회수</th><th>댓글</th><th>관리</th></tr>
     ${

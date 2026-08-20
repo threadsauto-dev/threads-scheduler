@@ -407,15 +407,23 @@ app.post('/posts/:id/cancel', requireAdmin, async (req, res) => {
 });
 
 app.get('/posts', requireAdmin, async (req, res) => {
+  // 채널 필터: ?channel=<id>가 있으면 그 채널 것만 본다 — 녹화/시연처럼 특정 채널
+  // 하나만 짚어서 보여줘야 할 때, 4개 채널이 뒤섞인 목록에서 매번 찾을 필요 없게.
+  const channelFilter = /^\d+$/.test(req.query.channel || '') ? Number(req.query.channel) : null;
   const { rows } = await pool.query(
     `SELECT sp.*, c.username FROM scheduled_posts sp
      JOIN channels c ON c.id = sp.channel_id
-     ORDER BY sp.scheduled_at DESC LIMIT 100`
+     WHERE $1::int IS NULL OR sp.channel_id = $1
+     ORDER BY sp.scheduled_at DESC LIMIT 100`,
+    [channelFilter]
   );
   const { rows: heartbeatRows } = await pool.query(
     'SELECT last_run_at, last_error FROM worker_heartbeats WHERE id = 1'
   );
-  res.send(views.postsHistory(rows, heartbeatRows[0]));
+  const { rows: channelRows } = await pool.query(
+    `SELECT id, username FROM channels WHERE disconnected_at IS NULL ORDER BY created_at`
+  );
+  res.send(views.postsHistory(rows, heartbeatRows[0], channelRows, channelFilter));
 });
 
 app.get('/report', requireAdmin, async (req, res) => {
