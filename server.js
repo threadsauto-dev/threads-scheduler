@@ -486,6 +486,14 @@ app.get('/report', requireAdmin, async (req, res) => {
     'SELECT id, username FROM channels WHERE disconnected_at IS NULL ORDER BY created_at'
   );
 
+  // 카드에 "완료+예정"뿐 아니라 그 채널의 하루 목표(광고성/정보성)도 같이 보여줘서,
+  // "예정 개수만 보고 목표에 못 미친다"고 오해하는 일을 줄인다.
+  const { rows: targetRows } = await pool.query(
+    'SELECT channel_id, ad_count, info_count FROM channel_daily_targets WHERE channel_id = ANY($1)',
+    [allChannels.map((c) => c.id)]
+  );
+  const targetsByChannel = new Map(targetRows.map((t) => [t.channel_id, t]));
+
   // 최근 10일(어제까지, 오늘 제외) 채널별 일별 조회수 추이. 오늘은 아직 48시간 갱신
   // 창 안이라 계속 오르는 중이라 그래프에 넣으면 매번 끝이 뚝 떨어진 것처럼 보여서 뺀다.
   // generate_series로 날짜를 먼저 다 만들어두고 LEFT JOIN해서, 글이 없던 날도 0으로
@@ -528,6 +536,7 @@ app.get('/report', requireAdmin, async (req, res) => {
   const channels = allChannels.map((c) => ({
     username: c.username,
     trend: trendByChannel.get(c.id) || [],
+    target: targetsByChannel.get(c.id) || { ad_count: 0, info_count: 0 },
     ...(channelsById.get(c.id) || {
       publishedCount: 0,
       pendingCount: 0,

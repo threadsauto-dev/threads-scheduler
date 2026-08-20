@@ -684,6 +684,9 @@ const reportDashboard = (channels, { reportDate, prevDate, nextDate, note = '', 
             <div class="stat-value orange">${ch.pendingCount}</div>
           </div>
         </div>
+        <div class="stat-sub" style="margin-top:8px;">
+          이 날 총 ${ch.publishedCount + ch.pendingCount}개 (목표: 광고성 ${ch.target.ad_count}개 + 정보성 ${ch.target.info_count}개 = ${ch.target.ad_count + ch.target.info_count}개)
+        </div>
         <div class="hour-grid">
           ${ch.hours
             .map(
