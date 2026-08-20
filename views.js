@@ -77,8 +77,11 @@ const layout = (title, body) => `<!doctype html>
   .stat-value.orange { color: #d97706; }
   .stat-sub { font-size: 12px; color: #999; margin-top: 2px; }
   .stat-row { display: flex; gap: 28px; margin-top: 18px; padding-top: 16px; border-top: 1px solid #f0f0f0; }
-  .stat-target { font-size: 30px; font-weight: 700; line-height: 1.2; color: #1a1a1a; margin-top: 10px; }
-  .stat-target .num { color: #7c3aed; }
+  .stat-target { margin-top: 10px; }
+  .stat-target-total { font-size: 30px; font-weight: 700; line-height: 1.2; color: #1a1a1a; }
+  .stat-target-total .num { color: #7c3aed; }
+  .stat-target-detail { font-size: 13px; color: #666; margin-top: 2px; }
+  .stat-target-detail .num { color: #7c3aed; font-weight: 700; }
   .hour-grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 4px; margin-top: 18px; }
   .hour-cell { text-align: center; border-radius: 6px; padding: 5px 0 4px; background: #f6f6f6; }
   .hour-cell .h { font-size: 9px; color: #aaa; }
@@ -687,7 +690,8 @@ const reportDashboard = (channels, { reportDate, prevDate, nextDate, note = '', 
           </div>
         </div>
         <div class="stat-target">
-          총 <span class="num">${ch.publishedCount + ch.pendingCount}</span>개 (광고성 <span class="num">${ch.target.ad_count}</span>개 + 정보성 <span class="num">${ch.target.info_count}</span>개)
+          <div class="stat-target-total">총 <span class="num">${ch.publishedCount + ch.pendingCount}</span>개</div>
+          <div class="stat-target-detail">광고성 <span class="num">${ch.target.ad_count}</span>개 + 정보성 <span class="num">${ch.target.info_count}</span>개</div>
         </div>
         <div class="hour-grid">
           ${ch.hours
