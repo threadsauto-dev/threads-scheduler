@@ -14,8 +14,8 @@ const MEDIA_CLEANUP_GRACE_DAYS = 5;
 
 async function cleanupOldMedia() {
   const { rows } = await pool.query(
-    `SELECT id, media FROM scheduled_posts
-     WHERE media_cleaned_at IS NULL AND media <> '[]'::jsonb
+    `SELECT id, media, reply_media FROM scheduled_posts
+     WHERE media_cleaned_at IS NULL AND (media <> '[]'::jsonb OR reply_media <> '[]'::jsonb)
        AND status IN ('published', 'failed', 'canceled')
        AND terminal_at IS NOT NULL AND terminal_at <= now() - ($1 || ' days')::interval
      LIMIT 50`,
@@ -25,11 +25,12 @@ async function cleanupOldMedia() {
 
   for (const post of rows) {
     try {
-      for (const item of post.media || []) {
+      const items = [...(post.media || []), ...(post.reply_media || [])];
+      for (const item of items) {
         await storage.deleteFile(env, item.url);
       }
       await pool.query(`UPDATE scheduled_posts SET media_cleaned_at = now() WHERE id = $1`, [post.id]);
-      console.log(`[미디어 정리 완료] post #${post.id} (${(post.media || []).length}개)`);
+      console.log(`[미디어 정리 완료] post #${post.id} (${items.length}개)`);
     } catch (e) {
       console.error(`[미디어 정리 실패] post #${post.id}: ${e.message}`);
     }
@@ -167,6 +168,37 @@ async function run() {
       }
       await publisher.publishCommentOne(post, channel);
       console.log(`[댓글 처리] @${channel.username} post #${post.id}`);
+    }
+  }
+
+  // 레시피 글의 "조리법" 답글 — comment_status가 이미 'posted'인(=재료+링크 답글이 먼저
+  // 성공한) 건만 골라온다. 그래야 두 답글이 항상 순서대로(재료+링크 → 조리법) 달린다.
+  const { rows: dueComments2 } = await pool.query(`
+    UPDATE scheduled_posts SET comment2_status = 'processing'
+    WHERE id IN (
+      SELECT id FROM scheduled_posts
+      WHERE comment2_status = 'pending' AND comment2_due_at <= now() AND comment_status = 'posted'
+      ORDER BY comment2_due_at
+      LIMIT 20
+    )
+    RETURNING *
+  `);
+
+  if (dueComments2.length === 0) {
+    console.log('처리할 조리법 댓글 없음');
+  } else {
+    for (const post of dueComments2) {
+      const { rows: channelRows } = await pool.query('SELECT * FROM channels WHERE id = $1', [post.channel_id]);
+      const channel = channelRows[0];
+      if (!channel || channel.disconnected_at) {
+        await pool.query(
+          `UPDATE scheduled_posts SET comment2_status = 'needs_review', comment2_error_message = $1 WHERE id = $2`,
+          [channel ? '채널 연결이 해제됨' : '채널을 찾을 수 없음', post.id]
+        );
+        continue;
+      }
+      await publisher.publishComment2One(post, channel);
+      console.log(`[조리법 댓글 처리] @${channel.username} post #${post.id}`);
     }
   }
 

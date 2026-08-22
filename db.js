@@ -46,8 +46,26 @@ async function migrate() {
   await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS comment_retry_count INTEGER NOT NULL DEFAULT 0;`);
   await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS comment_error_message TEXT;`);
   await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS comment_id TEXT;`);
+  // 댓글에 첨부하는 이미지/영상 — 채워져 있으면 발행 시 media_type을 TEXT 대신 IMAGE/VIDEO/CAROUSEL로
+  // 만들어(reply_to_id는 그대로) Threads가 댓글 속 링크에 자동으로 붙이는 링크 미리보기 카드 대신
+  // 이 미디어가 노출되게 한다 — 본문의 media 컬럼과 같은 방식.
+  await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS reply_media JSONB NOT NULL DEFAULT '[]'::jsonb;`);
   await pool.query(
     `CREATE INDEX IF NOT EXISTS idx_scheduled_posts_comment_due ON scheduled_posts (comment_status, comment_due_at);`
+  );
+  // 레시피 태그 전용 — "재료+쿠팡링크"(reply_text/comment_*)에 이어 "조리법"을 별도 답글로
+  // 순서대로 붙인다(둘 다 원본 게시물에 직접 다는 답글이라 nested reply 아님, 벤치마킹
+  // 게시물이 실제로 이렇게 2/3, 3/3으로 나눠 단 것과 동일한 구조 — 2026-08-22 논의).
+  // reply2_text가 NULL인 글(정보성/광고용)은 이 컬럼들을 그냥 안 씀.
+  await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS reply2_text TEXT;`);
+  await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS reply2_media JSONB NOT NULL DEFAULT '[]'::jsonb;`);
+  await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS comment2_status TEXT;`);
+  await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS comment2_due_at TIMESTAMPTZ;`);
+  await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS comment2_retry_count INTEGER NOT NULL DEFAULT 0;`);
+  await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS comment2_error_message TEXT;`);
+  await pool.query(`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS comment2_id TEXT;`);
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_scheduled_posts_comment2_due ON scheduled_posts (comment2_status, comment2_due_at);`
   );
   // 연결 해제된 채널 표시. 행 자체는 지우지 않는다 — 지우면(CASCADE) 발행 내역까지 같이
   // 사라지므로, 대신 access_token만 비우고(개인정보처리방침이 약속한 "즉시 폐기") 이후
@@ -128,6 +146,8 @@ async function migrate() {
       info_count INTEGER NOT NULL DEFAULT 0
     );
   `);
+  // 레시피 태그 도입(2026-08-22) — 광고용과 별개로 하루 목표 개수를 따로 관리.
+  await pool.query(`ALTER TABLE channel_daily_targets ADD COLUMN IF NOT EXISTS recipe_count INTEGER NOT NULL DEFAULT 0;`);
   // 1회성 백필: 기존에 등록해둔 고정 시간표(channel_slots, 매일 반복분만)의 개수를 그대로
   // 초기 목표값으로 옮겨서, 채널마다 다시 손으로 개수를 입력할 필요가 없게 한다. 이미
   // channel_daily_targets에 행이 있는 채널은 건드리지 않는다(사용자가 이미 조정했을 수 있음).

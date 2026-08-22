@@ -191,11 +191,15 @@ async function publishContainer(userId, accessToken, creationId) {
 }
 
 // media: [{ type: 'image'|'video', url }, ...] — 순서대로 캐러셀에 들어감. 0개면 텍스트만, 1개면 단일 이미지/영상, 2개 이상이면 캐러셀(최대 20개, Threads API 제한).
-async function buildMainCreationId(userId, accessToken, { text, media = [] }) {
-  if (media.length > 20) throw new Error('한 게시물에는 이미지+영상을 합쳐 최대 20개까지만 넣을 수 있습니다.');
+// extra: 최종(TEXT/IMAGE/VIDEO/CAROUSEL) 컨테이너에만 얹는 추가 파라미터 — reply_to_id 등.
+// media가 비어 TEXT로 만들어지면 text 안의 링크를 Threads가 자동으로 미리보기 카드로 붙인다.
+// media를 채우면 media_type이 TEXT가 아니게 되어 그 자동 링크 미리보기 대신 이 미디어가 노출된다
+// (본문/댓글 공통 — 댓글에서 "링크 미리보기를 없애려면 미디어를 첨부해야 한다"는 게 이 메커니즘).
+async function buildCreationId(userId, accessToken, { text, media = [], extra = {} }) {
+  if (media.length > 20) throw new Error('게시물 하나에는 이미지+영상을 합쳐 최대 20개까지만 넣을 수 있습니다.');
 
   if (media.length === 0) {
-    return createContainer(userId, accessToken, { media_type: 'TEXT', text });
+    return createContainer(userId, accessToken, { media_type: 'TEXT', text, ...extra });
   }
 
   if (media.length === 1) {
@@ -205,6 +209,7 @@ async function buildMainCreationId(userId, accessToken, { text, media = [] }) {
       media_type: item.type === 'video' ? 'VIDEO' : 'IMAGE',
       [urlField]: item.url,
       text,
+      ...extra,
     });
   }
 
@@ -225,14 +230,19 @@ async function buildMainCreationId(userId, accessToken, { text, media = [] }) {
     media_type: 'CAROUSEL',
     children: itemIds.join(','),
     text,
+    ...extra,
   });
 }
 
-async function publishReply(userId, accessToken, postId, replyText) {
-  const replyContainerId = await createContainer(userId, accessToken, {
-    media_type: 'TEXT',
+async function buildMainCreationId(userId, accessToken, { text, media = [] }) {
+  return buildCreationId(userId, accessToken, { text, media });
+}
+
+async function publishReply(userId, accessToken, postId, replyText, replyMedia = []) {
+  const replyContainerId = await buildCreationId(userId, accessToken, {
     text: replyText,
-    reply_to_id: postId,
+    media: replyMedia,
+    extra: { reply_to_id: postId },
   });
   return publishContainer(userId, accessToken, replyContainerId);
 }

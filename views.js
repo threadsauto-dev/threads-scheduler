@@ -150,12 +150,12 @@ const adminLogin = (error) => layout('관리자 로그인', `
 // 지키며) 정한다 — 그래서 여기는 몇 개씩 만들지만 정하면 된다.
 const channelTargetBox = (c) => {
   if (c.disconnected_at) return '';
-  const summary = c.todaySummary || { 정보성: { total: 0, remaining: 0 }, 광고용: { total: 0, remaining: 0 } };
-  const target = c.target || { ad_count: 0, info_count: 0 };
+  const summary = c.todaySummary || { 정보성: { total: 0, remaining: 0 }, 광고용: { total: 0, remaining: 0 }, 레시피: { total: 0, remaining: 0 } };
+  const target = c.target || { ad_count: 0, info_count: 0, recipe_count: 0 };
   return `
   <div style="border:1px solid #eee; border-radius:10px; padding:14px 16px; margin:-8px 0 20px;">
     <div style="font-size:13px; color:#888; margin-bottom:10px;">
-      오늘 정보성 ${summary.정보성.remaining}/${summary.정보성.total}개 남음 · 광고용 ${summary.광고용.remaining}/${summary.광고용.total}개 남음
+      오늘 정보성 ${summary.정보성.remaining}/${summary.정보성.total}개 남음 · 광고용 ${summary.광고용.remaining}/${summary.광고용.total}개 남음 · 레시피 ${summary.레시피.remaining}/${summary.레시피.total}개 남음
     </div>
     <form method="post" action="/channels/${c.id}/targets" style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:0;">
       <label style="font-weight:400; font-size:13px; color:#555; display:flex; align-items:center; gap:6px;">
@@ -166,6 +166,11 @@ const channelTargetBox = (c) => {
       <label style="font-weight:400; font-size:13px; color:#555; display:flex; align-items:center; gap:6px;">
         하루 정보성
         <input type="number" name="infoCount" min="0" value="${target.info_count}" style="width:60px; margin:0;" />
+        개
+      </label>
+      <label style="font-weight:400; font-size:13px; color:#555; display:flex; align-items:center; gap:6px;">
+        하루 레시피
+        <input type="number" name="recipeCount" min="0" value="${target.recipe_count}" style="width:60px; margin:0;" />
         개
       </label>
       <button type="submit" style="padding:8px 14px; font-size:13px;">저장</button>
@@ -275,6 +280,7 @@ const composeForm = (channels, message, upcomingPending = [], selectedChannelId,
       <option value="">(선택 안 함)</option>
       <option value="정보성" ${editingPost?.tag === '정보성' ? 'selected' : ''}>정보성</option>
       <option value="광고용" ${editingPost?.tag === '광고용' ? 'selected' : ''}>광고용</option>
+      <option value="레시피" ${editingPost?.tag === '레시피' ? 'selected' : ''}>레시피</option>
     </select>
     <label>본문</label>
     <textarea name="text" id="composeText" rows="5" required placeholder="게시할 내용을 입력하세요">${editingPost ? escapeHtml(editingPost.text || '') : ''}</textarea>
@@ -293,193 +299,268 @@ const composeForm = (channels, message, upcomingPending = [], selectedChannelId,
     </div>
     <input type="file" id="mediaFileInput" name="mediaFiles" accept="image/*,video/*" multiple style="display:none" />
     <div id="mediaPreviewList" style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:16px;"></div>
-    ${
-      editingPost && (editingPost.media || []).length > 0
-        ? `<script>
-      (function () {
-        var existingMedia = ${JSON.stringify(editingPost.media || []).replace(/</g, '\\u003c')};
-        var list = document.getElementById('existingMediaList');
-        var field = document.getElementById('existingMediaField');
 
-        function swapExisting(i, j) {
-          var tmp = existingMedia[i];
-          existingMedia[i] = existingMedia[j];
-          existingMedia[j] = tmp;
+    <label id="replyTextLabel">댓글 (선택)</label>
+    <textarea name="replyText" id="composeReplyText" rows="6" placeholder="게시 후 자동으로 달릴 댓글">${editingPost ? escapeHtml(editingPost.reply_text || '') : ''}</textarea>
+    <div id="replyTextCount" style="font-size:12px; color:#777; text-align:right; margin:-4px 0 8px;"></div>
+
+    <div id="recipeStep2Wrap" style="display:none;">
+      <label>조리법 (레시피 전용 — 위 댓글 뒤에 이어서 답글로 자동 발행)</label>
+      <textarea name="replyText2" id="composeReplyText2" rows="6" placeholder="조리 순서를 적어주세요">${editingPost ? escapeHtml(editingPost.reply2_text || '') : ''}</textarea>
+      <div id="replyText2Count" style="font-size:12px; color:#777; text-align:right; margin:-4px 0 16px;"></div>
+    </div>
+
+    ${
+      editingPost && (editingPost.reply_media || []).length > 0
+        ? `<label>댓글의 기존 미디어 (순서 변경/삭제 가능)</label>
+    <div id="existingReplyMediaList" style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:8px;"></div>
+    <input type="hidden" name="existingReplyMedia" id="existingReplyMediaField" value="" />`
+        : ''
+    }
+    <label>${editingPost ? '댓글에 새 이미지/영상 추가 (선택)' : '댓글 미디어 (선택)'}</label>
+    <p style="font-size:12px; color:#888; margin:-4px 0 8px;">첨부하면 댓글 속 쿠팡 링크의 자동 미리보기 대신 이 이미지가 노출돼요. 비워두면 링크 미리보기가 그대로 노출됩니다.</p>
+    <div id="replyMediaDropZone" style="border:2px dashed #ccc; border-radius:8px; padding:20px; text-align:center; margin-bottom:8px; cursor:pointer; color:#777; font-size:14px;">
+      클릭해서 파일 선택, 끌어다 놓기, 또는 위 댓글칸 포커스 후 이미지 붙여넣기(Ctrl+V)
+    </div>
+    <input type="file" id="replyMediaFileInput" name="replyMediaFiles" accept="image/*,video/*" multiple style="display:none" />
+    <div id="replyMediaPreviewList" style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:16px;"></div>
+
+    <script>
+      (function () {
+        function setupExistingList(listId, fieldId, initialItems) {
+          var items = initialItems.slice();
+          var list = document.getElementById(listId);
+          var field = document.getElementById(fieldId);
+          if (!list || !field) return;
+
+          function swapExisting(i, j) {
+            var tmp = items[i];
+            items[i] = items[j];
+            items[j] = tmp;
+            renderExisting();
+          }
+
+          function renderExisting() {
+            list.innerHTML = '';
+            field.value = JSON.stringify(items);
+            var total = items.length;
+            items.forEach(function (item, idx) {
+              var box = document.createElement('div');
+              box.style.cssText = 'position:relative; width:80px;';
+              if (item.type === 'video') {
+                var v = document.createElement('div');
+                v.style.cssText = 'width:80px; height:80px; background:#f0f0f0; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:24px;';
+                v.textContent = '🎬';
+                box.appendChild(v);
+              } else {
+                var img = document.createElement('img');
+                img.src = item.url;
+                img.style.cssText = 'width:80px; height:80px; object-fit:cover; border-radius:6px; display:block;';
+                box.appendChild(img);
+              }
+              var badge = document.createElement('span');
+              badge.style.cssText = 'position:absolute; top:2px; left:4px; color:#fff; font-size:11px; font-weight:600; text-shadow:0 0 3px #000;';
+              badge.textContent = String(idx + 1);
+              box.appendChild(badge);
+              var controls = document.createElement('div');
+              controls.style.cssText = 'display:flex; gap:2px; margin-top:2px;';
+              var upBtn = document.createElement('button');
+              upBtn.type = 'button';
+              upBtn.textContent = '↑';
+              upBtn.disabled = idx === 0;
+              upBtn.style.cssText = 'flex:1; font-size:11px; padding:2px 0; border:1px solid #ddd; border-radius:4px; background:#fff; color:#333; cursor:pointer; opacity:' + (idx === 0 ? '0.3' : '1') + ';';
+              upBtn.onclick = function () { swapExisting(idx, idx - 1); };
+              var downBtn = document.createElement('button');
+              downBtn.type = 'button';
+              downBtn.textContent = '↓';
+              downBtn.disabled = idx === total - 1;
+              downBtn.style.cssText = 'flex:1; font-size:11px; padding:2px 0; border:1px solid #ddd; border-radius:4px; background:#fff; color:#333; cursor:pointer; opacity:' + (idx === total - 1 ? '0.3' : '1') + ';';
+              downBtn.onclick = function () { swapExisting(idx, idx + 1); };
+              controls.appendChild(upBtn);
+              controls.appendChild(downBtn);
+              box.appendChild(controls);
+              var removeBtn = document.createElement('button');
+              removeBtn.type = 'button';
+              removeBtn.textContent = '✕';
+              removeBtn.style.cssText = 'position:absolute; top:-6px; right:-6px; width:20px; height:20px; border-radius:50%; border:none; background:#000; color:#fff; cursor:pointer; padding:0; font-size:11px; line-height:1;';
+              removeBtn.onclick = function () {
+                items = items.filter(function (_, i) { return i !== idx; });
+                renderExisting();
+              };
+              box.appendChild(removeBtn);
+              list.appendChild(box);
+            });
+          }
+
           renderExisting();
         }
 
-        function renderExisting() {
-          list.innerHTML = '';
-          field.value = JSON.stringify(existingMedia);
-          var total = existingMedia.length;
-          existingMedia.forEach(function (item, idx) {
-            var box = document.createElement('div');
-            box.style.cssText = 'position:relative; width:80px;';
-            if (item.type === 'video') {
-              var v = document.createElement('div');
-              v.style.cssText = 'width:80px; height:80px; background:#f0f0f0; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:24px;';
-              v.textContent = '🎬';
-              box.appendChild(v);
-            } else {
-              var img = document.createElement('img');
-              img.src = item.url;
-              img.style.cssText = 'width:80px; height:80px; object-fit:cover; border-radius:6px; display:block;';
-              box.appendChild(img);
-            }
-            var badge = document.createElement('span');
-            badge.style.cssText = 'position:absolute; top:2px; left:4px; color:#fff; font-size:11px; font-weight:600; text-shadow:0 0 3px #000;';
-            badge.textContent = String(idx + 1);
-            box.appendChild(badge);
-            var controls = document.createElement('div');
-            controls.style.cssText = 'display:flex; gap:2px; margin-top:2px;';
-            var upBtn = document.createElement('button');
-            upBtn.type = 'button';
-            upBtn.textContent = '↑';
-            upBtn.disabled = idx === 0;
-            upBtn.style.cssText = 'flex:1; font-size:11px; padding:2px 0; border:1px solid #ddd; border-radius:4px; background:#fff; color:#333; cursor:pointer; opacity:' + (idx === 0 ? '0.3' : '1') + ';';
-            upBtn.onclick = function () { swapExisting(idx, idx - 1); };
-            var downBtn = document.createElement('button');
-            downBtn.type = 'button';
-            downBtn.textContent = '↓';
-            downBtn.disabled = idx === total - 1;
-            downBtn.style.cssText = 'flex:1; font-size:11px; padding:2px 0; border:1px solid #ddd; border-radius:4px; background:#fff; color:#333; cursor:pointer; opacity:' + (idx === total - 1 ? '0.3' : '1') + ';';
-            downBtn.onclick = function () { swapExisting(idx, idx + 1); };
-            controls.appendChild(upBtn);
-            controls.appendChild(downBtn);
-            box.appendChild(controls);
-            var removeBtn = document.createElement('button');
-            removeBtn.type = 'button';
-            removeBtn.textContent = '✕';
-            removeBtn.style.cssText = 'position:absolute; top:-6px; right:-6px; width:20px; height:20px; border-radius:50%; border:none; background:#000; color:#fff; cursor:pointer; padding:0; font-size:11px; line-height:1;';
-            removeBtn.onclick = function () {
-              existingMedia = existingMedia.filter(function (_, i) { return i !== idx; });
-              renderExisting();
-            };
-            box.appendChild(removeBtn);
-            list.appendChild(box);
+        setupExistingList('existingMediaList', 'existingMediaField', ${JSON.stringify(editingPost?.media || []).replace(/</g, '\\u003c')});
+        setupExistingList('existingReplyMediaList', 'existingReplyMediaField', ${JSON.stringify(editingPost?.reply_media || []).replace(/</g, '\\u003c')});
+
+        function makeZone(zoneId, inputId, previewId) {
+          var dt = new DataTransfer();
+          var zone = document.getElementById(zoneId);
+          var input = document.getElementById(inputId);
+          var preview = document.getElementById(previewId);
+          if (!zone || !input || !preview) return null;
+
+          function replaceFiles(files) {
+            var newDt = new DataTransfer();
+            files.forEach(function (f) { newDt.items.add(f); });
+            dt = newDt;
+            input.files = dt.files;
+            render();
+          }
+
+          function swap(i, j) {
+            var files = Array.from(dt.files);
+            var tmp = files[i];
+            files[i] = files[j];
+            files[j] = tmp;
+            replaceFiles(files);
+          }
+
+          function render() {
+            preview.innerHTML = '';
+            var total = dt.files.length;
+            Array.from(dt.files).forEach(function (file, idx) {
+              var item = document.createElement('div');
+              item.style.cssText = 'position:relative; width:80px;';
+              if (file.type.indexOf('image/') === 0) {
+                var img = document.createElement('img');
+                img.src = URL.createObjectURL(file);
+                img.style.cssText = 'width:80px; height:80px; object-fit:cover; border-radius:6px; display:block;';
+                item.appendChild(img);
+              } else {
+                var box = document.createElement('div');
+                box.style.cssText = 'width:80px; height:80px; background:#f0f0f0; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:24px;';
+                box.textContent = '🎬';
+                item.appendChild(box);
+              }
+              var indexBadge = document.createElement('span');
+              indexBadge.style.cssText = 'position:absolute; top:2px; left:4px; color:#fff; font-size:11px; font-weight:600; text-shadow:0 0 3px #000;';
+              indexBadge.textContent = String(idx + 1);
+              item.appendChild(indexBadge);
+              var name = document.createElement('div');
+              name.style.cssText = 'font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+              name.textContent = file.name;
+              item.appendChild(name);
+              var controls = document.createElement('div');
+              controls.style.cssText = 'display:flex; gap:2px; margin-top:2px;';
+              var upBtn = document.createElement('button');
+              upBtn.type = 'button';
+              upBtn.textContent = '↑';
+              upBtn.disabled = idx === 0;
+              upBtn.style.cssText = 'flex:1; font-size:11px; padding:2px 0; border:1px solid #ddd; border-radius:4px; background:#fff; color:#333; cursor:pointer; opacity:' + (idx === 0 ? '0.3' : '1') + ';';
+              upBtn.onclick = function () { swap(idx, idx - 1); };
+              var downBtn = document.createElement('button');
+              downBtn.type = 'button';
+              downBtn.textContent = '↓';
+              downBtn.disabled = idx === total - 1;
+              downBtn.style.cssText = 'flex:1; font-size:11px; padding:2px 0; border:1px solid #ddd; border-radius:4px; background:#fff; color:#333; cursor:pointer; opacity:' + (idx === total - 1 ? '0.3' : '1') + ';';
+              downBtn.onclick = function () { swap(idx, idx + 1); };
+              controls.appendChild(upBtn);
+              controls.appendChild(downBtn);
+              item.appendChild(controls);
+              var removeBtn = document.createElement('button');
+              removeBtn.type = 'button';
+              removeBtn.textContent = '✕';
+              removeBtn.style.cssText = 'position:absolute; top:-6px; right:-6px; width:20px; height:20px; border-radius:50%; border:none; background:#000; color:#fff; cursor:pointer; padding:0; font-size:11px; line-height:1;';
+              removeBtn.onclick = function () {
+                replaceFiles(Array.from(dt.files).filter(function (f, i) { return i !== idx; }));
+              };
+              item.appendChild(removeBtn);
+              preview.appendChild(item);
+            });
+          }
+
+          zone.addEventListener('click', function () { activeZone = api; input.click(); });
+
+          input.addEventListener('change', function () {
+            Array.from(input.files).forEach(function (f) { dt.items.add(f); });
+            input.files = dt.files;
+            render();
           });
-        }
 
-        renderExisting();
-      })();
-    </script>`
-        : ''
-    }
-    <script>
-      (function () {
-        var dt = new DataTransfer();
-        var zone = document.getElementById('mediaDropZone');
-        var input = document.getElementById('mediaFileInput');
-        var preview = document.getElementById('mediaPreviewList');
-
-        function replaceFiles(files) {
-          var newDt = new DataTransfer();
-          files.forEach(function (f) { newDt.items.add(f); });
-          dt = newDt;
-          input.files = dt.files;
-          render();
-        }
-
-        function swap(i, j) {
-          var files = Array.from(dt.files);
-          var tmp = files[i];
-          files[i] = files[j];
-          files[j] = tmp;
-          replaceFiles(files);
-        }
-
-        function render() {
-          preview.innerHTML = '';
-          var total = dt.files.length;
-          Array.from(dt.files).forEach(function (file, idx) {
-            var item = document.createElement('div');
-            item.style.cssText = 'position:relative; width:80px;';
-            if (file.type.indexOf('image/') === 0) {
-              var img = document.createElement('img');
-              img.src = URL.createObjectURL(file);
-              img.style.cssText = 'width:80px; height:80px; object-fit:cover; border-radius:6px; display:block;';
-              item.appendChild(img);
-            } else {
-              var box = document.createElement('div');
-              box.style.cssText = 'width:80px; height:80px; background:#f0f0f0; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:24px;';
-              box.textContent = '🎬';
-              item.appendChild(box);
-            }
-            var indexBadge = document.createElement('span');
-            indexBadge.style.cssText = 'position:absolute; top:2px; left:4px; color:#fff; font-size:11px; font-weight:600; text-shadow:0 0 3px #000;';
-            indexBadge.textContent = String(idx + 1);
-            item.appendChild(indexBadge);
-            var name = document.createElement('div');
-            name.style.cssText = 'font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
-            name.textContent = file.name;
-            item.appendChild(name);
-            var controls = document.createElement('div');
-            controls.style.cssText = 'display:flex; gap:2px; margin-top:2px;';
-            var upBtn = document.createElement('button');
-            upBtn.type = 'button';
-            upBtn.textContent = '↑';
-            upBtn.disabled = idx === 0;
-            upBtn.style.cssText = 'flex:1; font-size:11px; padding:2px 0; border:1px solid #ddd; border-radius:4px; background:#fff; color:#333; cursor:pointer; opacity:' + (idx === 0 ? '0.3' : '1') + ';';
-            upBtn.onclick = function () { swap(idx, idx - 1); };
-            var downBtn = document.createElement('button');
-            downBtn.type = 'button';
-            downBtn.textContent = '↓';
-            downBtn.disabled = idx === total - 1;
-            downBtn.style.cssText = 'flex:1; font-size:11px; padding:2px 0; border:1px solid #ddd; border-radius:4px; background:#fff; color:#333; cursor:pointer; opacity:' + (idx === total - 1 ? '0.3' : '1') + ';';
-            downBtn.onclick = function () { swap(idx, idx + 1); };
-            controls.appendChild(upBtn);
-            controls.appendChild(downBtn);
-            item.appendChild(controls);
-            var removeBtn = document.createElement('button');
-            removeBtn.type = 'button';
-            removeBtn.textContent = '✕';
-            removeBtn.style.cssText = 'position:absolute; top:-6px; right:-6px; width:20px; height:20px; border-radius:50%; border:none; background:#000; color:#fff; cursor:pointer; padding:0; font-size:11px; line-height:1;';
-            removeBtn.onclick = function () {
-              replaceFiles(Array.from(dt.files).filter(function (f, i) { return i !== idx; }));
-            };
-            item.appendChild(removeBtn);
-            preview.appendChild(item);
+          zone.addEventListener('dragover', function (e) { e.preventDefault(); zone.style.borderColor = '#000'; activeZone = api; });
+          zone.addEventListener('dragleave', function () { zone.style.borderColor = '#ccc'; });
+          zone.addEventListener('drop', function (e) {
+            e.preventDefault();
+            zone.style.borderColor = '#ccc';
+            Array.from(e.dataTransfer.files).forEach(function (f) { dt.items.add(f); });
+            input.files = dt.files;
+            render();
           });
+
+          var api = {
+            addPasted: function (file) {
+              dt.items.add(file);
+              input.files = dt.files;
+              render();
+            },
+          };
+          return api;
         }
 
-        zone.addEventListener('click', function () { input.click(); });
+        var mainZone = makeZone('mediaDropZone', 'mediaFileInput', 'mediaPreviewList');
+        var replyZone = makeZone('replyMediaDropZone', 'replyMediaFileInput', 'replyMediaPreviewList');
+        var activeZone = mainZone;
 
-        input.addEventListener('change', function () {
-          Array.from(input.files).forEach(function (f) { dt.items.add(f); });
-          input.files = dt.files;
-          render();
-        });
-
-        zone.addEventListener('dragover', function (e) { e.preventDefault(); zone.style.borderColor = '#000'; });
-        zone.addEventListener('dragleave', function () { zone.style.borderColor = '#ccc'; });
-        zone.addEventListener('drop', function (e) {
-          e.preventDefault();
-          zone.style.borderColor = '#ccc';
-          Array.from(e.dataTransfer.files).forEach(function (f) { dt.items.add(f); });
-          input.files = dt.files;
-          render();
-        });
+        var replyTextEl = document.getElementById('composeReplyText');
+        if (replyTextEl) {
+          replyTextEl.addEventListener('focus', function () { activeZone = replyZone || mainZone; });
+          var replyCountEl = document.getElementById('replyTextCount');
+          var updateReplyCount = function () {
+            var len = replyTextEl.value.length;
+            replyCountEl.textContent = len + ' / 500' + (len > 500 ? ' — Threads 댓글 글자수 제한 초과!' : '');
+            replyCountEl.style.color = len > 500 ? '#c00' : '#777';
+          };
+          replyTextEl.addEventListener('input', updateReplyCount);
+          updateReplyCount();
+        }
+        var reply2TextEl = document.getElementById('composeReplyText2');
+        if (reply2TextEl) {
+          var reply2CountEl = document.getElementById('replyText2Count');
+          var updateReply2Count = function () {
+            var len = reply2TextEl.value.length;
+            reply2CountEl.textContent = len + ' / 500' + (len > 500 ? ' — Threads 댓글 글자수 제한 초과!' : '');
+            reply2CountEl.style.color = len > 500 ? '#c00' : '#777';
+          };
+          reply2TextEl.addEventListener('input', updateReply2Count);
+          updateReply2Count();
+        }
+        // 레시피 태그일 때만 "조리법" 2번째 댓글 칸을 보여준다 — 그 외 태그는 지금까지처럼
+        // 댓글 칸 하나만 씀(광고 고지문+CTA+링크 템플릿).
+        var tagSelectEl = document.getElementById('tagSelect');
+        var recipeStep2WrapEl = document.getElementById('recipeStep2Wrap');
+        var replyTextLabelEl = document.getElementById('replyTextLabel');
+        if (tagSelectEl && recipeStep2WrapEl) {
+          var syncRecipeFields = function () {
+            var isRecipe = tagSelectEl.value === '레시피';
+            recipeStep2WrapEl.style.display = isRecipe ? '' : 'none';
+            if (replyTextLabelEl) replyTextLabelEl.textContent = isRecipe ? '재료 + 쿠팡 링크' : '댓글 (선택)';
+          };
+          tagSelectEl.addEventListener('change', syncRecipeFields);
+          syncRecipeFields();
+        }
+        var mainTextEl = document.getElementById('composeText');
+        if (mainTextEl) {
+          mainTextEl.addEventListener('focus', function () { activeZone = mainZone; });
+        }
 
         document.addEventListener('paste', function (e) {
           var items = e.clipboardData && e.clipboardData.items;
-          if (!items) return;
-          var added = false;
+          if (!items || !activeZone) return;
           Array.from(items).forEach(function (it) {
             if (it.type.indexOf('image/') === 0) {
               var file = it.getAsFile();
-              if (file) {
-                dt.items.add(new File([file], 'pasted-' + Date.now() + '.png', { type: file.type }));
-                added = true;
-              }
+              if (file) activeZone.addPasted(new File([file], 'pasted-' + Date.now() + '.png', { type: file.type }));
             }
           });
-          if (added) { input.files = dt.files; render(); }
         });
       })();
     </script>
-
-    <label>댓글 (선택)</label>
-    <textarea name="replyText" id="composeReplyText" rows="6" placeholder="게시 후 자동으로 달릴 댓글">${editingPost ? escapeHtml(editingPost.reply_text || '') : ''}</textarea>
 
     <label>발행 날짜</label>
     <input type="date" name="scheduledDate" id="scheduledDate" required ${editingPost ? `value="${kstDateInputParts(editingPost.scheduled_at).date}"` : ''} />
@@ -513,7 +594,7 @@ const composeForm = (channels, message, upcomingPending = [], selectedChannelId,
           var channelId = document.getElementById('channelSelect').value;
           var tag = document.getElementById('tagSelect').value;
           if (!tag) {
-            status.textContent = '태그(정보성/광고용)를 먼저 골라주세요.';
+            status.textContent = '태그(정보성/광고용/레시피)를 먼저 골라주세요.';
             return;
           }
           status.textContent = '조회 중...';
@@ -602,6 +683,13 @@ const postsHistory = (posts, heartbeat, channels = [], selectedChannelId = null)
             : `<span class="badge badge-comment-${p.comment_status || 'pending'}" ${
                 p.comment_error_message ? `title="${escapeHtml(p.comment_error_message)}"` : ''
               }>${COMMENT_LABELS[p.comment_status] || '-'}</span>`;
+          // 레시피 글의 조리법(reply2) — 재료+링크 댓글과 별개로 답글이 하나 더 나가므로
+          // 상태도 따로 보여준다. reply2_text 없는(레시피가 아닌) 글은 그냥 안 보임.
+          const comment2Cell = p.reply2_text
+            ? ` <span class="badge badge-comment-${p.comment2_status || 'pending'}" ${
+                p.comment2_error_message ? `title="[조리법] ${escapeHtml(p.comment2_error_message)}"` : ''
+              }>조리법: ${COMMENT_LABELS[p.comment2_status] || '-'}</span>`
+            : '';
           const viewsCell = p.status !== 'published' ? '-' : `<strong>${formatNumber(p.views)}</strong>`;
           return `<tr>
         <td>@${p.username}</td>
@@ -609,10 +697,12 @@ const postsHistory = (posts, heartbeat, channels = [], selectedChannelId = null)
         <td>${formatKst(p.scheduled_at)}</td>
         <td><span class="badge badge-${p.status}" ${p.error_message ? `title="${escapeHtml(p.error_message)}"` : ''}>${STATUS_LABELS[p.status] || p.status}</span></td>
         <td>${viewsCell}</td>
-        <td>${commentCell}</td>
+        <td>${commentCell}${comment2Cell}</td>
         <td>${p.status === 'pending' ? pendingActions(p, '/posts') : ''}</td>
       </tr>
-      ${p.error_message ? `<tr><td colspan="7" style="font-size:12px; color:#c00; padding-top:0;">${escapeHtml(p.error_message)}</td></tr>` : ''}`;
+      ${p.error_message ? `<tr><td colspan="7" style="font-size:12px; color:#c00; padding-top:0;">${escapeHtml(p.error_message)}</td></tr>` : ''}
+      ${p.comment_error_message ? `<tr><td colspan="7" style="font-size:12px; color:#c00; padding-top:0;">[댓글] ${escapeHtml(p.comment_error_message)}</td></tr>` : ''}
+      ${p.comment2_error_message ? `<tr><td colspan="7" style="font-size:12px; color:#c00; padding-top:0;">[조리법] ${escapeHtml(p.comment2_error_message)}</td></tr>` : ''}`;
         })
         .join('') || '<tr><td colspan="7">기록이 없습니다.</td></tr>'
     }
@@ -706,7 +796,7 @@ const reportDashboard = (channels, { reportDate, prevDate, nextDate, note = '', 
         </div>
         <div class="stat-target">
           <div class="stat-target-total">총 <span class="num">${ch.publishedCount + ch.pendingCount}</span>개</div>
-          <div class="stat-target-detail">광고성 <span class="num">${ch.target.ad_count}</span>개 + 정보성 <span class="num">${ch.target.info_count}</span>개</div>
+          <div class="stat-target-detail">광고성 <span class="num">${ch.target.ad_count}</span>개 + 정보성 <span class="num">${ch.target.info_count}</span>개 + 레시피 <span class="num">${ch.target.recipe_count ?? 0}</span>개</div>
         </div>
         <div class="hour-grid">
           ${ch.hours

@@ -40,6 +40,7 @@ const OFFPEAK_WINDOWS = [
 
 // 태그별로 "어느 시간대를 어떤 우선순위로 시도할지"의 순서.
 // 정보성은 우선순위 구분 없이 피크만 아니면 다 되니 한 묶음(1순위)으로 합쳐서 넣는다.
+// 레시피도 쿠팡 링크가 붙는 광고성 콘텐츠라 광고용과 같은 우선순위(피크 시간대 최우선)를 쓴다.
 function windowTiersForTag(tag) {
   if (tag === '정보성') return [[...SECONDARY_WINDOWS, ...OFFPEAK_WINDOWS]];
   return [PEAK_WINDOWS, SECONDARY_WINDOWS, OFFPEAK_WINDOWS];
@@ -118,9 +119,9 @@ async function loadDaySchedule(pool, dateStr) {
 }
 
 async function loadTargets(pool) {
-  const { rows } = await pool.query('SELECT channel_id, ad_count, info_count FROM channel_daily_targets');
+  const { rows } = await pool.query('SELECT channel_id, ad_count, info_count, recipe_count FROM channel_daily_targets');
   const map = new Map();
-  for (const r of rows) map.set(r.channel_id, { 광고용: r.ad_count, 정보성: r.info_count });
+  for (const r of rows) map.set(r.channel_id, { 광고용: r.ad_count, 정보성: r.info_count, 레시피: r.recipe_count });
   return map;
 }
 
@@ -214,9 +215,9 @@ async function getNextAvailableSlotAnyChannel(pool, tag, fromDateStr) {
 async function getTodaySlotSummary(pool, channelId) {
   const dateStr = todayKstDateStr();
   const [targetsMap, daySchedule] = await Promise.all([loadTargets(pool), loadDaySchedule(pool, dateStr)]);
-  const target = targetsMap.get(Number(channelId)) || { 광고용: 0, 정보성: 0 };
-  const summary = { 정보성: { total: 0, remaining: 0 }, 광고용: { total: 0, remaining: 0 } };
-  for (const tag of ['정보성', '광고용']) {
+  const target = targetsMap.get(Number(channelId)) || { 광고용: 0, 정보성: 0, 레시피: 0 };
+  const summary = { 정보성: { total: 0, remaining: 0 }, 광고용: { total: 0, remaining: 0 }, 레시피: { total: 0, remaining: 0 } };
+  for (const tag of ['정보성', '광고용', '레시피']) {
     const used = daySchedule.filter((r) => r.channelId === Number(channelId) && r.tag === tag).length;
     summary[tag] = { total: target[tag] || 0, remaining: Math.max(0, (target[tag] || 0) - used) };
   }

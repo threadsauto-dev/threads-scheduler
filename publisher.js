@@ -50,10 +50,16 @@ async function publishOne(post, channel) {
     });
     if (post.reply_text) {
       // 댓글이 있는 게시물이면, 본문 발행 성공과 동시에 "5분 뒤부터 댓글 시도"를 예약해둔다.
+      // 레시피 글(reply2_text 있음)은 "조리법"도 같이 5분 뒤로 예약해두지만, worker.js가
+      // comment2는 comment_status='posted'(재료+링크 댓글이 실제로 달린 뒤)일 때만 집어가게
+      // 걸어놔서 두 답글이 항상 순서대로(재료+링크 → 조리법) 달리게 한다.
       await pool.query(
         `UPDATE scheduled_posts SET status = 'published', published_post_id = $1, error_message = NULL,
          terminal_at = now(), comment_status = 'pending', comment_due_at = now() + interval '5 minutes',
-         comment_retry_count = 0
+         comment_retry_count = 0,
+         comment2_status = CASE WHEN reply2_text IS NOT NULL THEN 'pending' ELSE comment2_status END,
+         comment2_due_at = CASE WHEN reply2_text IS NOT NULL THEN now() + interval '5 minutes' ELSE comment2_due_at END,
+         comment2_retry_count = 0
          WHERE id = $2`,
         [postId, post.id]
       );
@@ -100,16 +106,20 @@ async function publishOne(post, channel) {
 // 실패하면 더 기다려봐야 소용없을 가능성이 높다고 보고 'needs_review'로 넘겨 사람이 보게 한다.
 const COMMENT_BACKOFF_MINUTES = [5, 15, 30, 60];
 
-// scheduled_posts 한 건의 "댓글"(쿠팡 링크)을 시도한다. worker.js가 comment_due_at이
-// 지난 건들을 골라 이 함수를 호출한다.
-async function publishCommentOne(post, channel) {
+// scheduled_posts 한 건의 답글 "한 슬롯"을 시도한다. 정보성/광고용 글은 슬롯이 하나뿐(재료+
+// 쿠팡링크 자리를 그대로 씀)이고, 레시피 글은 이 함수가 슬롯 1(재료+링크)과 슬롯 2(조리법)
+// 두 번 호출된다 — 컬럼 이름만 다를 뿐 재시도/needs_review 로직은 완전히 동일해서 하나로
+// 합쳐두고, publishCommentOne/publishComment2One이 각자의 컬럼명을 넘겨 얇게 감싼다.
+async function publishReplySlotOne(post, channel, slot) {
+  const text = post[slot.textField];
+  const media = post[slot.mediaField] || [];
   try {
     // 재시도 전에 먼저 이미 달려 있는지 확인한다 — 직전 시도가 응답만 유실됐을 뿐
     // 실제로는 성공했을 수 있어서, 이 확인 없이 바로 재시도하면 댓글이 중복될 수 있다.
-    const already = await threads.hasOwnReply(post.published_post_id, channel.access_token, post.reply_text);
+    const already = await threads.hasOwnReply(post.published_post_id, channel.access_token, text);
     if (already) {
       await pool.query(
-        `UPDATE scheduled_posts SET comment_status = 'posted', comment_error_message = NULL WHERE id = $1`,
+        `UPDATE scheduled_posts SET ${slot.statusCol} = 'posted', ${slot.errorCol} = NULL WHERE id = $1`,
         [post.id]
       );
       return;
@@ -119,24 +129,25 @@ async function publishCommentOne(post, channel) {
       channel.threads_user_id,
       channel.access_token,
       post.published_post_id,
-      post.reply_text
+      text,
+      media
     );
     await pool.query(
-      `UPDATE scheduled_posts SET comment_status = 'posted', comment_id = $1, comment_error_message = NULL WHERE id = $2`,
+      `UPDATE scheduled_posts SET ${slot.statusCol} = 'posted', ${slot.idCol} = $1, ${slot.errorCol} = NULL WHERE id = $2`,
       [replyId, post.id]
     );
   } catch (e) {
     const channelReason = channelLevelErrorReason(e);
     if (channelReason) await flagChannelForReconnect(channel.id, `${channelReason}: ${e.message}`);
     const prefix = channelReason ? `[⚠ 채널 문제로 보임 — ${channelReason}] ` : '';
-    const retryCount = (post.comment_retry_count || 0) + 1;
+    const retryCount = (post[slot.retryCountField] || 0) + 1;
     if (isRetryableError(e) && retryCount <= COMMENT_BACKOFF_MINUTES.length) {
       // 원인이 애매한 실패(네트워크 순간 끊김, 전파 지연 등) — 다음 확인 전에 이미
       // 성공해 있을 수도 있으니 위의 hasOwnReply 확인이 다음 시도 때 다시 걸러준다.
       const delayMin = COMMENT_BACKOFF_MINUTES[retryCount - 1];
       await pool.query(
-        `UPDATE scheduled_posts SET comment_status = 'pending',
-         comment_due_at = now() + ($1 || ' minutes')::interval, comment_retry_count = $2, comment_error_message = $3
+        `UPDATE scheduled_posts SET ${slot.statusCol} = 'pending',
+         ${slot.dueAtCol} = now() + ($1 || ' minutes')::interval, ${slot.retryCountCol} = $2, ${slot.errorCol} = $3
          WHERE id = $4`,
         [delayMin, retryCount, `${prefix}${e.message}`, post.id]
       );
@@ -145,11 +156,53 @@ async function publishCommentOne(post, channel) {
       // 5분→15분→30분→1시간 재시도를 다 썼는데도 계속 실패한 경우 — 사람이 Threads API
       // 오류 원문을 보고 직접 판단(링크 수정, 수동 댓글 등)해야 한다.
       await pool.query(
-        `UPDATE scheduled_posts SET comment_status = 'needs_review', comment_retry_count = $1, comment_error_message = $2 WHERE id = $3`,
+        `UPDATE scheduled_posts SET ${slot.statusCol} = 'needs_review', ${slot.retryCountCol} = $1, ${slot.errorCol} = $2 WHERE id = $3`,
         [retryCount, `${prefix}${e.message}`, post.id]
       );
+      // 슬롯 1(재료+링크)이 영구 실패하면 슬롯 2(조리법)는 comment_status='posted'를
+      // 영영 못 보고 조용히 무한 대기하게 된다 — 같이 needs_review로 넘겨서 묻히지 않게 한다.
+      if (slot === COMMENT_SLOT_1 && post.reply2_text && post.comment2_status === 'pending') {
+        await pool.query(
+          `UPDATE scheduled_posts SET comment2_status = 'needs_review',
+           comment2_error_message = '재료+링크 답글이 실패해서 순서상 조리법도 달 수 없었어요' WHERE id = $1`,
+          [post.id]
+        );
+      }
     }
   }
 }
 
-module.exports = { publishOne, publishCommentOne, channelLevelErrorReason, flagChannelForReconnect };
+const COMMENT_SLOT_1 = {
+  textField: 'reply_text',
+  mediaField: 'reply_media',
+  statusCol: 'comment_status',
+  dueAtCol: 'comment_due_at',
+  retryCountField: 'comment_retry_count',
+  retryCountCol: 'comment_retry_count',
+  errorCol: 'comment_error_message',
+  idCol: 'comment_id',
+};
+const COMMENT_SLOT_2 = {
+  textField: 'reply2_text',
+  mediaField: 'reply2_media',
+  statusCol: 'comment2_status',
+  dueAtCol: 'comment2_due_at',
+  retryCountField: 'comment2_retry_count',
+  retryCountCol: 'comment2_retry_count',
+  errorCol: 'comment2_error_message',
+  idCol: 'comment2_id',
+};
+
+// scheduled_posts 한 건의 "댓글"(정보성/광고용은 유일한 댓글, 레시피는 "재료+쿠팡링크")을
+// 시도한다. worker.js가 comment_due_at이 지난 건들을 골라 이 함수를 호출한다.
+async function publishCommentOne(post, channel) {
+  return publishReplySlotOne(post, channel, COMMENT_SLOT_1);
+}
+
+// 레시피 글의 "조리법" 답글(재료+링크 다음 순서) — worker.js가 comment2_due_at이 지났고
+// comment_status가 이미 'posted'인(=슬롯 1이 먼저 성공한) 건들만 골라 호출한다.
+async function publishComment2One(post, channel) {
+  return publishReplySlotOne(post, channel, COMMENT_SLOT_2);
+}
+
+module.exports = { publishOne, publishCommentOne, publishComment2One, channelLevelErrorReason, flagChannelForReconnect };

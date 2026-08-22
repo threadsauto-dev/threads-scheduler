@@ -131,7 +131,7 @@ app.get('/channels', requireAdmin, async (req, res) => {
   );
   const channelsWithTargets = rows.map((c, i) => ({
     ...c,
-    target: targetsByChannel.get(c.id) || { ad_count: 0, info_count: 0 },
+    target: targetsByChannel.get(c.id) || { ad_count: 0, info_count: 0, recipe_count: 0 },
     todaySummary: summaries[i],
   }));
   res.send(views.channelsList(channelsWithTargets));
@@ -145,10 +145,11 @@ app.get('/channels/connect', requireAdmin, (req, res) => {
 app.post('/channels/:id/targets', requireAdmin, async (req, res) => {
   const adCount = Math.max(0, parseInt(req.body.adCount, 10) || 0);
   const infoCount = Math.max(0, parseInt(req.body.infoCount, 10) || 0);
+  const recipeCount = Math.max(0, parseInt(req.body.recipeCount, 10) || 0);
   await pool.query(
-    `INSERT INTO channel_daily_targets (channel_id, ad_count, info_count) VALUES ($1, $2, $3)
-     ON CONFLICT (channel_id) DO UPDATE SET ad_count = $2, info_count = $3`,
-    [req.params.id, adCount, infoCount]
+    `INSERT INTO channel_daily_targets (channel_id, ad_count, info_count, recipe_count) VALUES ($1, $2, $3, $4)
+     ON CONFLICT (channel_id) DO UPDATE SET ad_count = $2, info_count = $3, recipe_count = $4`,
+    [req.params.id, adCount, infoCount, recipeCount]
   );
   res.redirect('/channels');
 });
@@ -156,7 +157,7 @@ app.post('/channels/:id/targets', requireAdmin, async (req, res) => {
 // 글쓰기 화면에서 "다음 빈 슬롯 채우기"가 부르는 조회 전용 엔드포인트.
 app.get('/channels/:id/next-slot', requireAdmin, async (req, res) => {
   const tag = req.query.tag;
-  if (!['정보성', '광고용'].includes(tag)) return res.status(400).json({ error: '태그가 올바르지 않습니다.' });
+  if (!['정보성', '광고용', '레시피'].includes(tag)) return res.status(400).json({ error: '태그가 올바르지 않습니다.' });
   const next = await slots.getNextAvailableSlot(pool, req.params.id, tag);
   if (!next) return res.status(404).json({ error: '이 채널에 등록된 빈 슬롯을 찾지 못했습니다. 설정을 확인해주세요.' });
   res.json(next);
@@ -165,10 +166,24 @@ app.get('/channels/:id/next-slot', requireAdmin, async (req, res) => {
 // 확장 프로그램이 준비한 게시물 하나를 넘기면, 연결된 모든 채널을 통틀어 가장 먼저 비는
 // 슬롯(그 태그 기준)에 자동 배정해서 예약한다 — 어느 채널로 갈지는 이 서버가 정하고,
 // 확장 프로그램은 이 호출을 준비된 개수만큼 순서대로(동시에 X) 반복하기만 하면 된다.
-app.post('/api/schedule', requireAdminApi, upload.fields([{ name: 'mediaFiles', maxCount: 20 }]), async (req, res) => {
-  const { text, replyText, tag, startDate } = req.body;
-  if (!['정보성', '광고용'].includes(tag)) return res.status(400).json({ error: '태그(정보성/광고용)가 올바르지 않습니다.' });
+app.post(
+  '/api/schedule',
+  requireAdminApi,
+  upload.fields([{ name: 'mediaFiles', maxCount: 20 }, { name: 'replyMediaFiles', maxCount: 20 }]),
+  async (req, res) => {
+  const { text, replyText, replyText2, tag, startDate } = req.body;
+  if (!['정보성', '광고용', '레시피'].includes(tag)) return res.status(400).json({ error: '태그(정보성/광고용/레시피)가 올바르지 않습니다.' });
   if (!text || !text.trim()) return res.status(400).json({ error: '본문이 비어있습니다.' });
+  // Threads API가 댓글 본문을 500자 초과로 거부한다 — 저장 시점에 막지 않으면
+  // 발행 후 재시도만 반복하다 2시간 뒤 '확인 필요'로 빠진다(사고 사례 2026-08-22).
+  // 레시피 태그는 답글이 "재료+쿠팡링크"(replyText)/"조리법"(replyText2) 둘로 나뉘는데,
+  // 각각 독립된 답글이라 500자 제한도 각자 따로 적용된다.
+  if (replyText && replyText.length > 500) {
+    return res.status(400).json({ error: `댓글이 너무 깁니다 (${replyText.length}/500자). Threads는 댓글을 500자까지만 허용합니다.` });
+  }
+  if (replyText2 && replyText2.length > 500) {
+    return res.status(400).json({ error: `조리법 댓글이 너무 깁니다 (${replyText2.length}/500자). Threads는 댓글을 500자까지만 허용합니다.` });
+  }
   if (startDate && !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
     return res.status(400).json({ error: 'startDate 형식이 올바르지 않습니다 (YYYY-MM-DD).' });
   }
@@ -185,10 +200,19 @@ app.post('/api/schedule', requireAdminApi, upload.fields([{ name: 'mediaFiles', 
 
   const files = req.files?.mediaFiles || [];
   if (files.length > 20) return res.status(400).json({ error: '미디어는 최대 20개까지만 첨부할 수 있습니다.' });
+  const replyFiles = req.files?.replyMediaFiles || [];
+  if (replyFiles.length > 20) return res.status(400).json({ error: '댓글 미디어는 최대 20개까지만 첨부할 수 있습니다.' });
   let media;
+  let replyMedia;
   try {
     media = await Promise.all(
       files.map(async (file) => ({
+        type: file.mimetype.startsWith('video/') ? 'video' : 'image',
+        url: await storage.uploadFile(env, file.buffer, file.mimetype),
+      }))
+    );
+    replyMedia = await Promise.all(
+      replyFiles.map(async (file) => ({
         type: file.mimetype.startsWith('video/') ? 'video' : 'image',
         url: await storage.uploadFile(env, file.buffer, file.mimetype),
       }))
@@ -199,9 +223,9 @@ app.post('/api/schedule', requireAdminApi, upload.fields([{ name: 'mediaFiles', 
 
   const scheduledAt = parseKstDatetimeLocal(`${assignment.dateStr}T${assignment.hour}:${assignment.minute}`);
   const { rows: inserted } = await pool.query(
-    `INSERT INTO scheduled_posts (channel_id, text, media, reply_text, scheduled_at, tag)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-    [channel.id, text, JSON.stringify(media), replyText || null, scheduledAt, tag]
+    `INSERT INTO scheduled_posts (channel_id, text, media, reply_text, reply_media, reply2_text, scheduled_at, tag)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+    [channel.id, text, JSON.stringify(media), replyText || null, JSON.stringify(replyMedia), replyText2 || null, scheduledAt, tag]
   );
 
   res.json({
@@ -307,10 +331,25 @@ app.get('/compose/:id/edit', requireAdmin, async (req, res) => {
 app.post(
   '/compose',
   requireAdmin,
-  upload.fields([{ name: 'mediaFiles', maxCount: 20 }]),
+  upload.fields([{ name: 'mediaFiles', maxCount: 20 }, { name: 'replyMediaFiles', maxCount: 20 }]),
   async (req, res) => {
-    const { channelId, text, replyText, scheduledDate, scheduledHour, scheduledMinute, editId, tag } = req.body;
-    const normalizedTag = ['정보성', '광고용'].includes(tag) ? tag : null;
+    const { channelId, text, replyText, replyText2, scheduledDate, scheduledHour, scheduledMinute, editId, tag } = req.body;
+    const normalizedTag = ['정보성', '광고용', '레시피'].includes(tag) ? tag : null;
+
+    // Threads API가 댓글 본문을 500자 초과로 거부한다 — 저장 시점에 막지 않으면
+    // 발행 후 재시도만 반복하다 2시간 뒤 '확인 필요'로 빠진다(사고 사례 2026-08-22).
+    // 레시피 태그는 답글이 "재료+쿠팡링크"(replyText)/"조리법"(replyText2) 둘로 나뉘는데,
+    // 각각 독립된 답글이라 500자 제한도 각자 따로 적용된다.
+    if (replyText && replyText.length > 500) {
+      return res
+        .status(400)
+        .send(views.errorPage(`댓글이 너무 깁니다 (${replyText.length}/500자). Threads는 댓글을 500자까지만 허용합니다.`));
+    }
+    if (replyText2 && replyText2.length > 500) {
+      return res
+        .status(400)
+        .send(views.errorPage(`조리법 댓글이 너무 깁니다 (${replyText2.length}/500자). Threads는 댓글을 500자까지만 허용합니다.`));
+    }
 
     const { rows: channelRows } = await pool.query(
       'SELECT * FROM channels WHERE id = $1 AND disconnected_at IS NULL',
@@ -339,10 +378,31 @@ app.post(
       return res.status(400).send(views.errorPage('이미지+영상은 합쳐서 최대 20개까지만 첨부할 수 있습니다.'));
     }
 
+    let existingReplyMedia = [];
+    if (req.body.existingReplyMedia) {
+      try {
+        existingReplyMedia = JSON.parse(req.body.existingReplyMedia);
+      } catch {
+        existingReplyMedia = [];
+      }
+    }
+
+    const replyFiles = req.files?.replyMediaFiles || [];
+    if (existingReplyMedia.length + replyFiles.length > 20) {
+      return res.status(400).send(views.errorPage('댓글의 이미지+영상은 합쳐서 최대 20개까지만 첨부할 수 있습니다.'));
+    }
+
     let newMedia;
+    let newReplyMedia;
     try {
       newMedia = await Promise.all(
         files.map(async (file) => ({
+          type: file.mimetype.startsWith('video/') ? 'video' : 'image',
+          url: await storage.uploadFile(env, file.buffer, file.mimetype),
+        }))
+      );
+      newReplyMedia = await Promise.all(
+        replyFiles.map(async (file) => ({
           type: file.mimetype.startsWith('video/') ? 'video' : 'image',
           url: await storage.uploadFile(env, file.buffer, file.mimetype),
         }))
@@ -351,14 +411,15 @@ app.post(
       return res.status(500).send(views.errorPage(`미디어 업로드 실패: ${e.message}`));
     }
     const media = [...existingMedia, ...newMedia];
+    const replyMedia = [...existingReplyMedia, ...newReplyMedia];
 
     let post;
     if (editId) {
       // 발행 시각이 지나 크론이 이미 집어간(processing/published) 예약은 수정 못 하게 status='pending'을 같이 확인.
       const { rows: updated } = await pool.query(
-        `UPDATE scheduled_posts SET channel_id = $1, text = $2, media = $3, reply_text = $4, scheduled_at = $5, tag = $6, retry_count = 0
-         WHERE id = $7 AND status = 'pending' RETURNING *`,
-        [channel.id, text, JSON.stringify(media), replyText || null, scheduledAt, normalizedTag, editId]
+        `UPDATE scheduled_posts SET channel_id = $1, text = $2, media = $3, reply_text = $4, reply_media = $5, reply2_text = $6, scheduled_at = $7, tag = $8, retry_count = 0
+         WHERE id = $9 AND status = 'pending' RETURNING *`,
+        [channel.id, text, JSON.stringify(media), replyText || null, JSON.stringify(replyMedia), replyText2 || null, scheduledAt, normalizedTag, editId]
       );
       post = updated[0];
       if (!post) {
@@ -368,9 +429,9 @@ app.post(
       }
     } else {
       const { rows: inserted } = await pool.query(
-        `INSERT INTO scheduled_posts (channel_id, text, media, reply_text, scheduled_at, tag)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-        [channel.id, text, JSON.stringify(media), replyText || null, scheduledAt, normalizedTag]
+        `INSERT INTO scheduled_posts (channel_id, text, media, reply_text, reply_media, reply2_text, scheduled_at, tag)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+        [channel.id, text, JSON.stringify(media), replyText || null, JSON.stringify(replyMedia), replyText2 || null, scheduledAt, normalizedTag]
       );
       post = inserted[0];
     }
@@ -497,7 +558,7 @@ app.get('/report', requireAdmin, async (req, res) => {
   // 카드에 "완료+예정"뿐 아니라 그 채널의 하루 목표(광고성/정보성)도 같이 보여줘서,
   // "예정 개수만 보고 목표에 못 미친다"고 오해하는 일을 줄인다.
   const { rows: targetRows } = await pool.query(
-    'SELECT channel_id, ad_count, info_count FROM channel_daily_targets WHERE channel_id = ANY($1)',
+    'SELECT channel_id, ad_count, info_count, recipe_count FROM channel_daily_targets WHERE channel_id = ANY($1)',
     [allChannels.map((c) => c.id)]
   );
   const targetsByChannel = new Map(targetRows.map((t) => [t.channel_id, t]));
@@ -544,7 +605,7 @@ app.get('/report', requireAdmin, async (req, res) => {
   const channels = allChannels.map((c) => ({
     username: c.username,
     trend: trendByChannel.get(c.id) || [],
-    target: targetsByChannel.get(c.id) || { ad_count: 0, info_count: 0 },
+    target: targetsByChannel.get(c.id) || { ad_count: 0, info_count: 0, recipe_count: 0 },
     ...(channelsById.get(c.id) || {
       publishedCount: 0,
       pendingCount: 0,
